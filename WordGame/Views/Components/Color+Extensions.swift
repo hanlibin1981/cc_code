@@ -46,9 +46,9 @@ extension Color {
 ///   - titles remain readable without dominating the screen
 ///   - captions are still legible on small screens
 enum DesignFont {
-    /// Shared scale factor: system default × 1.6
-    /// Computation: base_point_size × 2 × 0.8 = base_point_size × 1.6
-    private static let scale: CGFloat = 1.6
+    /// Shared scale factor: system default × 1.2
+    /// Keeps fonts readable on macOS without oversized text.
+    private static let scale: CGFloat = 1.2
 
     // Large titles — game question word display
     static let largeTitle = Font.system(size: 34 * scale, weight: .bold)

@@ -47,15 +47,16 @@ struct LevelSelectionView: View {
     }
 
     /// Returns true if the given level is locked (cannot be played yet).
-    /// Uses lastPassedBossChapter to determine if a chapter's regular levels (1-3)
-    /// are unlocked — this avoids the bug where passing a boss (currentStage=4)
-    /// would incorrectly unlock all regular stages in the same chapter.
     ///
     /// Locking rules:
     /// - Chapter 1, Stage 1: always unlocked
-    /// - Regular stage (1-3): unlocked when lastPassedBossChapter >= level.chapter - 1
-    ///   (i.e., the boss of the previous chapter has been passed)
-    /// - Boss (stage=4): unlocked only when the LevelRecord confirms stage-3 was beaten
+    /// - Regular stage (1-3): unlocked sequentially within the current chapter.
+    ///   Uses `currentStage` to know "where the player is" and `isStagePassed`
+    ///   to know "what has actually been completed."
+    ///   After beating a boss, `currentStage` is set to 1 of the new chapter —
+    ///   that stage is accessible (the player is already there) but subsequent
+    ///   stages require the preceding ones to be passed.
+    /// - Boss (stage=4): unlocked only when ALL regular stages of that chapter are passed.
     private func isLevelLocked(_ level: GameLevel) -> Bool {
         // First level is always accessible
         if level.chapter == 1 && level.stage == 1 && !level.isBossLevel {
@@ -64,30 +65,42 @@ struct LevelSelectionView: View {
 
         if let gp = gameProgress {
             if level.isBossLevel {
-                // Boss unlocks when stage 3 of the same chapter is passed
-                let stage3Passed = isStagePassed(level.chapter, 3)
-                return !stage3Passed
+                // Boss unlocks when ALL regular stages (1 through 3) of the same chapter are passed.
+                // Each must be beaten sequentially — one boss does NOT skip you ahead.
+                for s in 1...3 {
+                    if !isStagePassed(level.chapter, s) {
+                        return true  // locked — some regular stage not yet beaten
+                    }
+                }
+                return false
             } else {
-                // Regular stage: unlocked when the boss of the previous chapter has been passed.
-                // lastPassedBossChapter >= level.chapter - 1 means that chapter's boss is done.
-                // Special case: chapter 1 stage 1 is already handled above.
+                // Regular stage
                 if level.chapter > 1 {
-                    // For stage 1: requires previous chapter's boss (lastPassedBossChapter >= chapter - 1)
-                    // For stage 2-3: also requires previous chapter's boss since stage 1
-                    // is gated by same rule.
-                    return gp.lastPassedBossChapter < level.chapter - 1
+                    // Require previous chapter's boss to be beaten before entering new chapter
+                    if gp.lastPassedBossChapter < level.chapter - 1 {
+                        return true
+                    }
                 }
-                // Chapter 1, stages 2-3: unlocked by currentStage progression
-                if gp.currentChapter > level.chapter {
+
+                // Within the current chapter:
+                // - Stages behind currentStage must have been passed
+                // - currentStage itself is accessible (player is already there)
+                // - Stages ahead require all previous stages passed
+                if level.stage < gp.currentStage {
+                    // This stage is behind the current position — must have been passed
+                    return !isStagePassed(level.chapter, level.stage)
+                } else if level.stage > gp.currentStage {
+                    // Future stage — need all stages up to this one passed
+                    for s in 1..<level.stage {
+                        if !isStagePassed(level.chapter, s) {
+                            return true
+                        }
+                    }
+                    return false
+                } else {
+                    // level.stage == currentStage — player is already here, accessible
                     return false
                 }
-                if gp.currentChapter == level.chapter && gp.currentStage >= level.stage {
-                    return false
-                }
-                // Need previous stage in same chapter to be beaten
-                let prevStage = level.stage - 1
-                if prevStage == 0 { return false }
-                return !isStagePassed(level.chapter, prevStage)
             }
         }
 
@@ -190,24 +203,21 @@ struct LevelSelectionView: View {
         }
         .frame(minWidth: 600, minHeight: 480)
         .background(Color.backgroundMain)
-        .onAppear {
-            isLoading = true
-            Task {
-                let generatedLevels = gameVM.generateLevels(for: book)
-                // Load all level records for this book
-                var records: [String: LevelRecord] = [:]
-                let allRecords = (try? DatabaseService.shared.fetchAllLevelRecords(forBookId: book.id)) ?? []
-                for record in allRecords {
-                    records[recordKey(chapter: record.chapter, stage: record.stage)] = record
-                }
-                // Also load game progress to determine current unlock state
-                let progress = try? DatabaseService.shared.fetchOrCreateProgress(forBookId: book.id)
-                await MainActor.run {
-                    levels = generatedLevels
-                    levelRecords = records
-                    gameProgress = progress
-                    isLoading = false
-                }
+        .task {
+            let generatedLevels = gameVM.generateLevels(for: book)
+            // Load all level records for this book
+            var records: [String: LevelRecord] = [:]
+            let allRecords = (try? DatabaseService.shared.fetchAllLevelRecords(forBookId: book.id)) ?? []
+            for record in allRecords {
+                records[recordKey(chapter: record.chapter, stage: record.stage)] = record
+            }
+            // Also load game progress to determine current unlock state
+            let progress = try? DatabaseService.shared.fetchOrCreateProgress(forBookId: book.id)
+            await MainActor.run {
+                levels = generatedLevels
+                levelRecords = records
+                gameProgress = progress
+                isLoading = false
             }
         }
     }

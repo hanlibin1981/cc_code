@@ -163,7 +163,7 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("开发者")
                                     .font(DesignFont.body)
-                                Text("WordGame Team")
+                                Text("韩立斌")
                                     .font(DesignFont.caption)
                                     .foregroundStyle(.secondary)
                             }

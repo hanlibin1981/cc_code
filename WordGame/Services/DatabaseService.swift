@@ -359,9 +359,10 @@ final class DatabaseService: ObservableObject {
 
     /// Fetch a preset vocabulary book by its PresetVocabulary type.
     /// Returns nil if not found.
+    /// Matches by ID (preset's rawValue) so renames don't break preset detection.
     func fetchPresetVocabulary(_ preset: PresetVocabulary) throws -> WordBook? {
         try withDB { db in
-            let query = wordBooks.filter(wbName == preset.displayName && wbIsPreset == true)
+            let query = wordBooks.filter(wbId == preset.rawValue && wbIsPreset == true)
             guard let row = try db.pluck(query) else { return nil }
 
             return WordBook(
@@ -411,6 +412,45 @@ final class DatabaseService: ObservableObject {
             try db.transaction {
                 for word in wordList {
                     try createWord(word)
+                }
+            }
+        }
+    }
+
+    /// Insert a word book and all its words in a single atomic transaction.
+    /// If anything fails, the entire operation rolls back — no orphaned books.
+    func createWordBookAndWordsAtomically(book: WordBook, words wordList: [Word]) throws {
+        try withDB { db in
+            try db.transaction {
+                // Insert word book
+                let bookInsert = wordBooks.insert(
+                    wbId <- book.id,
+                    wbName <- book.name,
+                    wbDescription <- book.description,
+                    wbWordCount <- book.wordCount,
+                    wbIsPreset <- book.isPreset,
+                    wbCreatedAt <- book.createdAt.timeIntervalSince1970,
+                    wbUpdatedAt <- book.updatedAt.timeIntervalSince1970
+                )
+                try db.run(bookInsert)
+
+                // Insert all words
+                for word in wordList {
+                    let wordInsert = words.insert(
+                        wId <- word.id,
+                        wBookId <- word.bookId,
+                        wWord <- word.word,
+                        wPhonetic <- word.phonetic,
+                        wMeaning <- word.meaning,
+                        wSentence <- word.sentence,
+                        wSentenceTranslation <- word.sentenceTranslation,
+                        wAudioUrl <- word.audioUrl,
+                        wMasteryLevel <- word.masteryLevel,
+                        wWrongCount <- word.wrongCount,
+                        wLastReviewedAt <- word.lastReviewedAt?.timeIntervalSince1970,
+                        wCreatedAt <- word.createdAt.timeIntervalSince1970
+                    )
+                    try db.run(wordInsert)
                 }
             }
         }

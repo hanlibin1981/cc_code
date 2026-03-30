@@ -8,6 +8,9 @@ struct WordLearningView: View {
     let onStartGame: () -> Void
     let onDismiss: () -> Void
 
+    /// Called when the learning phase ends (user taps 开始闯关 or dismisses).
+    var onLearningComplete: (() -> Void)?
+
     @Binding var studiedWordIds: Set<String>
     @Binding var gamePhase: GamePhase
 

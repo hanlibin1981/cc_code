@@ -172,7 +172,7 @@ final class GameViewModel: ObservableObject {
         // Create questions for each word with different types
         for (index, word) in wordsToUse.enumerated() {
             let questionType = questionTypeForIndex(index)
-            let question = createQuestion(from: word, type: questionType)
+            let question = createQuestion(from: word, type: questionType, level: level)
             generatedQuestions.append(question)
         }
 
@@ -187,11 +187,11 @@ final class GameViewModel: ObservableObject {
     }
 
     /// Create a question for a word
-    private func createQuestion(from word: Word, type: QuestionType) -> GameQuestion {
+    private func createQuestion(from word: Word, type: QuestionType, level: GameLevel?) -> GameQuestion {
         switch type {
         case .choice:
-            // Generate wrong options from similar words
-            let wrongOptions = generateWrongOptions(for: word, count: 3)
+            // Generate wrong options from similar words (harder for boss levels)
+            let wrongOptions = generateWrongOptions(for: word, count: 3, isBossLevel: level?.isBossLevel ?? false)
             let options = ([word.meaning] + wrongOptions).shuffled()
 
             return GameQuestion(
@@ -220,9 +220,18 @@ final class GameViewModel: ObservableObject {
     /// Generate wrong options for choice questions.
     /// Prioritises words from the same chapter (or same word-book for practice mode)
     /// to make options feel contextually related rather than random.
-    private func generateWrongOptions(for word: Word, count: Int) -> [String] {
+    /// For Boss levels, draws from the ENTIRE book (excluding current level words)
+    /// to maximise difficulty.
+    private func generateWrongOptions(for word: Word, count: Int, isBossLevel: Bool = false) -> [String] {
         // Find the chapter this word belongs to in the current level
         let wordChapter = chapterWordIds.first { $0.value.contains(word.id) }?.key
+
+        // For Boss levels: use the full book pool minus current level words (harder)
+        if isBossLevel {
+            let currentLevelWordIds = levelWordIds(for: word)
+            let bossPool = allWords.filter { $0.id != word.id && !currentLevelWordIds.contains($0.id) }
+            return Array(bossPool.shuffled().prefix(count).map { $0.meaning })
+        }
 
         // Prefer words from the same chapter for semantically cohesive options
         var preferredPool: [Word] = []
@@ -235,6 +244,11 @@ final class GameViewModel: ObservableObject {
         fullPool.shuffle()
 
         return Array(fullPool.prefix(count).map { $0.meaning })
+    }
+
+    /// Returns the Set<String> of word IDs belonging to the level that contains `word`.
+    private func levelWordIds(for word: Word) -> Set<String> {
+        chapterWordIds.first { $0.value.contains(word.id) }?.value ?? []
     }
 
     /// Build a chapter → wordIds map from the given level's structure.
@@ -325,7 +339,7 @@ final class GameViewModel: ObservableObject {
         isGameActive = false
         isGameCompleted = true
 
-        // Calculate stars
+        // Calculate stars — guard against empty question set
         let accuracy = totalQuestions > 0 ? Double(correctCount) / Double(totalQuestions) * 100 : 0
 
         if accuracy >= 100 {
@@ -338,6 +352,9 @@ final class GameViewModel: ObservableObject {
             starsEarned = 0
         }
 
+        // If no questions were generated (empty level), treat as not passed
+        let passThreshold = totalQuestions > 0 ? passingThreshold : 100
+
         // Create game result
         gameResult = GameResult(
             bookId: currentBook?.id ?? "",
@@ -348,7 +365,7 @@ final class GameViewModel: ObservableObject {
             score: score,
             starsEarned: starsEarned,
             accuracy: accuracy,
-            isPassed: accuracy >= Double(passingThreshold)
+            isPassed: accuracy >= Double(passThreshold)
         )
 
         // Update progress

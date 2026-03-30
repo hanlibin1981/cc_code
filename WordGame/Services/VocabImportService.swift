@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import os
 
 /// Service for importing vocabulary from JSON files and CSV files
@@ -8,21 +9,27 @@ final class VocabImportService {
 
     private init() {}
 
-    private func needsPresetReimport(existingBook: WordBook, expectedWordCount: Int) throws -> Bool {
+    private func needsPresetReimport(existingBook: WordBook, expectedWordCount: Int, bundleURL: URL) throws -> Bool {
+        // Always reimport if word count changed (e.g. new version of the vocabulary)
         if existingBook.wordCount != expectedWordCount {
             return true
         }
 
-        let words = try DatabaseService.shared.fetchWords(forBookId: existingBook.id)
-        if words.count != expectedWordCount {
+        // For stable vocabularies (CET-4) that haven't changed count: use SHA256 content hash.
+        // If the JSON file content changed (new translations, corrected data, etc.),
+        // the hash will differ and trigger a clean reimport.
+        let data = try Data(contentsOf: bundleURL)
+        let hash = SHA256.hash(data: data)
+        let hashString = hash.compactMap { String(format: "%02x", $0) }.joined()
+        let storedHash = UserDefaults.standard.string(forKey: "vocab_hash_\(existingBook.id)")
+
+        if storedHash != hashString {
+            // Content changed — mark updated hash and reimport
+            UserDefaults.standard.set(hashString, forKey: "vocab_hash_\(existingBook.id)")
             return true
         }
 
-        return words.contains {
-            let hasSentence = !($0.sentence?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-            let hasTranslation = !($0.sentenceTranslation?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-            return hasSentence && !hasTranslation  // reimport if sentence exists but translation is truly missing
-        }
+        return false
     }
 
     // MARK: - JSON Import
@@ -48,7 +55,7 @@ final class VocabImportService {
 
         // Check if this preset already exists in the database.
         if let existingBook = try DatabaseService.shared.fetchPresetVocabulary(preset) {
-            if try needsPresetReimport(existingBook: existingBook, expectedWordCount: expectedWordCount) {
+            if try needsPresetReimport(existingBook: existingBook, expectedWordCount: expectedWordCount, bundleURL: url) {
                 logger.info("Preset '\(preset.displayName)' is outdated or incomplete, re-importing...")
                 try DatabaseService.shared.deleteWordBook(byId: existingBook.id)
             } else {
@@ -58,7 +65,10 @@ final class VocabImportService {
         }
 
         // Create the word book and bulk-insert all words.
+        // Use preset's rawValue as the ID so fetchPresetVocabulary can
+        // match by ID regardless of whether the user renamed the book.
         let book = WordBook(
+            id: preset.rawValue,
             name: preset.displayName,
             description: preset.description,
             wordCount: expectedWordCount,
@@ -76,7 +86,15 @@ final class VocabImportService {
                 sentenceTranslation: vocabWord.sentenceTranslation
             )
         }
-        try DatabaseService.shared.createWords(words)
+
+        // Use an atomic transaction so partial failures don't leave orphaned book records.
+        do {
+            try DatabaseService.shared.createWordBookAndWordsAtomically(book: book, words: words)
+        } catch {
+            // If the atomic insert failed, attempt to clean up the half-created book.
+            try? DatabaseService.shared.deleteWordBook(byId: book.id)
+            throw error
+        }
     }
 
     /// Initialize all preset vocabularies
