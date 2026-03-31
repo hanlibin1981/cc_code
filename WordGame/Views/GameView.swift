@@ -377,7 +377,7 @@ struct GameView: View {
                 if self.consecutiveWrongCount >= 3 {
                     self.showHint = true
                 }
-                // Wrong answer: user must use navigation buttons
+                // Wrong answer: user must use navigation buttons, reset immediately
                 reset()
                 self.pendingReset = nil
             } else {
@@ -385,13 +385,15 @@ struct GameView: View {
                 self.showHint = false
                 // Auto-advance after correct answer
                 try? await Task.sleep(nanoseconds: 500_000_000)
+                // Use pendingReset so onChange (which fires synchronously from goToNextQuestion)
+                // handles the reset consistently for all paths
+                self.pendingReset = reset
                 if self.gameVM.currentQuestionIndex + 1 < self.gameVM.totalQuestions {
                     self.gameVM.goToNextQuestion()
                 } else {
                     await self.gameVM.endGame()
                 }
-                reset()
-                self.pendingReset = nil
+                // pendingReset will be cleared by onChange handler after it calls pendingReset?()
             }
         }
     }
@@ -528,12 +530,13 @@ struct GameView: View {
                 self.consecutiveWrongCount = 0
                 self.showHint = false
                 try? await Task.sleep(nanoseconds: 700_000_000)
+                // Use pendingReset so onChange handles reset consistently
+                self.pendingReset = reset
                 if self.gameVM.currentQuestionIndex + 1 < self.gameVM.totalQuestions {
                     self.gameVM.goToNextQuestion()
                 } else {
                     await self.gameVM.endGame()
                 }
-                reset()
             }
         }
     }
@@ -644,12 +647,13 @@ struct GameView: View {
                 self.consecutiveWrongCount = 0
                 self.showHint = false
                 try? await Task.sleep(nanoseconds: 700_000_000)
+                // Use pendingReset so onChange handles reset consistently
+                self.pendingReset = reset
                 if self.gameVM.currentQuestionIndex + 1 < self.gameVM.totalQuestions {
                     self.gameVM.goToNextQuestion()
                 } else {
                     await self.gameVM.endGame()
                 }
-                reset()
             }
         }
     }

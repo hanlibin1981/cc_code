@@ -16,6 +16,8 @@ final class AudioService: ObservableObject {
     private var playbackIdCounter: Int = 0
     /// Active speech synthesizer callbacks keyed by playback ID
     private var speechCallbacks: [Int: () -> Void] = [:]
+    /// Currently running say process (for interruption)
+    private var sayProcess: Process?
 
     private let synthesizer = AVSpeechSynthesizer()
     private let delegateHandler = SpeechDelegateHandler()
@@ -92,7 +94,7 @@ final class AudioService: ObservableObject {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/say")
         task.arguments = ["-v", voice ?? preferredVoice, text]
-
+        sayProcess = task
         isPlaying = true
 
         DispatchQueue.global().async { [weak self] in
@@ -100,11 +102,18 @@ final class AudioService: ObservableObject {
                 try task.run()
                 task.waitUntilExit()
                 DispatchQueue.main.async {
-                    self?.isPlaying = false
+                    // Only clear if this is still the same process
+                    if self?.sayProcess === task {
+                        self?.sayProcess = nil
+                        self?.isPlaying = false
+                    }
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self?.isPlaying = false
+                    if self?.sayProcess === task {
+                        self?.sayProcess = nil
+                        self?.isPlaying = false
+                    }
                     self?.lastError = error.localizedDescription
                     self?.logger.error("say command failed: \(error.localizedDescription)")
                 }
@@ -119,6 +128,11 @@ final class AudioService: ObservableObject {
         }
         audioPlayer?.stop()
         audioPlayer = nil
+        // Terminate any running say process
+        if let process = sayProcess, process.isRunning {
+            process.terminate()
+        }
+        sayProcess = nil
         isPlaying = false
         speechCallbacks.removeAll()
     }
