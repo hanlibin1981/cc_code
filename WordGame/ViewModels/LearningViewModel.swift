@@ -289,20 +289,16 @@ final class LearningViewModel: ObservableObject {
         }
     }
 
-    /// Chunk review words into ReviewLevel groups (10 words per level).
-    /// Completed levels are marked with studiedCount == totalWords so they show as "已完成".
+    /// Generate a single review level containing ALL words.
+    /// All words are in one level for focused review.
     private func generateReviewLevels(from words: [Word], completedIds: Set<Int> = []) -> [ReviewLevel] {
-        let wordsPerLevel = 10
-        return words.chunked(into: wordsPerLevel).enumerated().map { index, chunk in
-            let levelId = index + 1
-            let isCompleted = completedIds.contains(levelId)
-            return ReviewLevel(
-                id: levelId,
-                wordIds: chunk.map { $0.id },
-                totalWords: chunk.count,
-                studiedCount: isCompleted ? chunk.count : 0
-            )
-        }
+        let isCompleted = completedIds.contains(1)
+        return [ReviewLevel(
+            id: 1,
+            wordIds: words.map { $0.id },
+            totalWords: words.count,
+            studiedCount: isCompleted ? words.count : 0
+        )]
     }
 
     /// Persist a completed review level to the database.

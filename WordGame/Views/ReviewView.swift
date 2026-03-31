@@ -58,7 +58,7 @@ struct ReviewView: View {
     // MARK: - Header
     private var headerSection: some View {
         VStack(spacing: 8) {
-            Text("选择复习关卡")
+            Text("复习模式")
                 .font(.system(size: 20, weight: .bold))
 
             Text(subtitleText)
@@ -144,7 +144,8 @@ struct ReviewView: View {
                         ReviewLevelCard(
                             level: level,
                             isCompleted: level.isAllStudied,
-                            isLocked: false
+                            isLocked: false,
+                            showAsSingleLevel: learningVM.reviewLevels.count == 1
                         )
                     }
                     .buttonStyle(.plain)
@@ -180,6 +181,7 @@ struct ReviewLevelCard: View {
     let level: ReviewLevel
     let isCompleted: Bool
     let isLocked: Bool
+    var showAsSingleLevel: Bool = false
 
     @State private var isHovered = false
 
@@ -216,7 +218,7 @@ struct ReviewLevelCard: View {
                 }
             }
 
-            Text("第\(level.id)关")
+            Text(showAsSingleLevel ? "复习关" : "第\(level.id)关")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(isLocked ? .secondary : .primary)
 

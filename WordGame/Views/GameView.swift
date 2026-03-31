@@ -105,6 +105,14 @@ struct GameView: View {
                 consecutiveWrongCount = 0
                 showHint = false
                 selectedOption = nil
+
+                // Trigger audio for the new question after the view updates
+                // Using DispatchQueue to ensure this runs after SwiftUI's view update
+                if let question = gameVM.currentQuestion {
+                    DispatchQueue.main.async {
+                        self.autoPlayAudioIfNeeded(for: question)
+                    }
+                }
             }
         }
         .onAppear {
@@ -879,7 +887,8 @@ struct GameView: View {
     /// The next level to continue to, based on current progress.
     /// Nil when all levels are completed.
     private var nextLevel: GameLevel? {
-        guard gameVM.gameResult?.isPassed == true else { return nil }
+        // Review mode has no next level - only one consolidated review level exists
+        guard !isReviewMode, gameVM.gameResult?.isPassed == true else { return nil }
         let allLevels = gameVM.generateLevels(for: book)
         return allLevels.first { lvl in
             let record = try? DatabaseService.shared.fetchLevelRecord(
@@ -909,8 +918,7 @@ struct GameView: View {
                 VStack(spacing: 8) {
                     if let lvl = nextLevel {
                         Button(action: {
-                            onContinueToNext?(book, lvl)
-                            dismiss()
+                            continueToNextLevel(lvl)
                         }) {
                             HStack {
                                 Text("下一关")
@@ -1002,6 +1010,19 @@ struct GameView: View {
                 await gameVM.startReviewGame(for: book, level: level, reviewWords: reviewWords)
             } else {
                 await gameVM.startGame(for: book, level: level)
+            }
+        }
+    }
+
+    private func continueToNextLevel(_ level: GameLevel) {
+        visibleStars = 0
+        studiedWordIds = []
+        lastAutoPlayedQuestionID = nil
+        Task {
+            await gameVM.startGame(for: book, level: level)
+            // Enter learning phase first; user goes through word learning before quiz
+            withAnimation {
+                gamePhase = .learning
             }
         }
     }

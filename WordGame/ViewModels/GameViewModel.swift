@@ -180,7 +180,12 @@ final class GameViewModel: ObservableObject {
     }
 
     /// Determine question type based on position (for variety)
+    /// In review mode, only use .choice (English word → Chinese meaning)
     private func questionTypeForIndex(_ index: Int) -> QuestionType {
+        // Review mode: only choice questions
+        if isReviewMode {
+            return .choice
+        }
         // Mix question types: choice, spelling, listening
         let types: [QuestionType] = [.choice, .choice, .spelling, .listening]
         return types[index % types.count]
