@@ -9,29 +9,6 @@ final class VocabImportService {
 
     private init() {}
 
-    private func needsPresetReimport(existingBook: WordBook, expectedWordCount: Int, bundleURL: URL) throws -> Bool {
-        // Always reimport if word count changed (e.g. new version of the vocabulary)
-        if existingBook.wordCount != expectedWordCount {
-            return true
-        }
-
-        // For stable vocabularies (CET-4) that haven't changed count: use SHA256 content hash.
-        // If the JSON file content changed (new translations, corrected data, etc.),
-        // the hash will differ and trigger a clean reimport.
-        let data = try Data(contentsOf: bundleURL)
-        let hash = SHA256.hash(data: data)
-        let hashString = hash.compactMap { String(format: "%02x", $0) }.joined()
-        let storedHash = UserDefaults.standard.string(forKey: "vocab_hash_\(existingBook.id)")
-
-        if storedHash != hashString {
-            // Content changed — mark updated hash and reimport
-            UserDefaults.standard.set(hashString, forKey: "vocab_hash_\(existingBook.id)")
-            return true
-        }
-
-        return false
-    }
-
     // MARK: - JSON Import
     /// Import vocabulary from a JSON file in the app bundle.
     ///
@@ -51,11 +28,18 @@ final class VocabImportService {
 
         let data = try Data(contentsOf: url)
         let vocabulary = try JSONDecoder().decode(VocabularyFile.self, from: data)
-        let expectedWordCount = vocabulary.words.count
+        let vocabularyWords = vocabulary.flattenedWords
+        guard !vocabularyWords.isEmpty else {
+            throw VocabImportError.invalidFormat
+        }
+        let expectedWordCount = vocabularyWords.count
+        let hashString = SHA256.hash(data: data).compactMap { String(format: "%02x", $0) }.joined()
+        let hashKey = "vocab_hash_\(preset.rawValue)"
 
-        // Check if this preset already exists in the database.
         if let existingBook = try DatabaseService.shared.fetchPresetVocabulary(preset) {
-            if try needsPresetReimport(existingBook: existingBook, expectedWordCount: expectedWordCount, bundleURL: url) {
+            let storedHash = UserDefaults.standard.string(forKey: hashKey)
+            let needsRefresh = existingBook.wordCount != expectedWordCount || storedHash != hashString
+            if needsRefresh {
                 logger.info("Preset '\(preset.displayName)' is outdated or incomplete, re-importing...")
                 try DatabaseService.shared.deleteWordBook(byId: existingBook.id)
             } else {
@@ -64,9 +48,6 @@ final class VocabImportService {
             }
         }
 
-        // Create the word book and bulk-insert all words.
-        // Use preset's rawValue as the ID so fetchPresetVocabulary can
-        // match by ID regardless of whether the user renamed the book.
         let book = WordBook(
             id: preset.rawValue,
             name: preset.displayName,
@@ -74,9 +55,8 @@ final class VocabImportService {
             wordCount: expectedWordCount,
             isPreset: true
         )
-        try DatabaseService.shared.createWordBook(book)
 
-        let words = vocabulary.words.map { vocabWord in
+        let words = vocabularyWords.map { vocabWord in
             Word(
                 bookId: book.id,
                 word: vocabWord.word,
@@ -90,8 +70,8 @@ final class VocabImportService {
         // Use an atomic transaction so partial failures don't leave orphaned book records.
         do {
             try DatabaseService.shared.createWordBookAndWordsAtomically(book: book, words: words)
+            UserDefaults.standard.set(hashString, forKey: hashKey)
         } catch {
-            // If the atomic insert failed, attempt to clean up the half-created book.
             try? DatabaseService.shared.deleteWordBook(byId: book.id)
             throw error
         }
@@ -239,6 +219,20 @@ final class VocabImportService {
 // MARK: - Supporting Types
 struct VocabularyFile: Codable {
     let name: String
+    let description: String?
+    let words: [VocabularyWord]?
+    let themes: [VocabularyTheme]?
+
+    var flattenedWords: [VocabularyWord] {
+        if let themeWords = themes?.flatMap({ $0.words }), !themeWords.isEmpty {
+            return themeWords
+        }
+        return words ?? []
+    }
+}
+
+struct VocabularyTheme: Codable {
+    let name: String?
     let description: String?
     let words: [VocabularyWord]
 }

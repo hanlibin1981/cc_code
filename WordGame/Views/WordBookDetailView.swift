@@ -10,6 +10,7 @@ struct WordBookDetailView: View {
     @State private var selectedLevelForGame: GameLevel?
     @State private var searchText = ""
     @State private var selectedWord: Word?
+    @State private var showDeleteConfirmation = false
 
     var filteredWords: [Word] {
         if searchText.isEmpty {
@@ -105,12 +106,29 @@ struct WordBookDetailView: View {
             }
 
             if !book.isPreset {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button(role: .destructive) {
+                        showDeleteConfirmation = true
+                    } label: {
+                        Label("删除词库", systemImage: "trash")
+                    }
+
                     Button(action: { showAddWord = true }) {
                         Image(systemName: "plus")
                     }
                 }
             }
+        }
+        .alert("删除词库", isPresented: $showDeleteConfirmation) {
+            Button("取消", role: .cancel) {}
+            Button("删除", role: .destructive) {
+                Task {
+                    try? await wordBookVM.deleteWordBook(book)
+                    dismiss()
+                }
+            }
+        } message: {
+            Text("确认删除「\(book.name)」？此操作会同时清除所有单词。")
         }
         .onAppear {
             Task {
