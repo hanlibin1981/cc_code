@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import os
 
 /// 备份文件信息
 struct BackupFile: Identifiable, Equatable {
@@ -131,7 +132,12 @@ final class BackupService {
             .compactMap { url -> BackupFile? in
                 let name = url.lastPathComponent
                 let dateStr = String(name.dropFirst("vocab_backup_".count).dropLast(".sql".count))
-                let date = dateFormatter.date(from: dateStr) ?? Date()
+                guard let date = dateFormatter.date(from: dateStr) else {
+                    // Parsing failed — skip this malformed backup instead of hiding it under today's date
+                    Logger(subsystem: "com.wordgame.backup", category: "BackupService")
+                        .warning("Skipping backup with unrecognised date format: \(name)")
+                    return nil
+                }
                 let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
                 return BackupFile(id: name, date: date, size: size)
             }

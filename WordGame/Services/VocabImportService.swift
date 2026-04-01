@@ -79,6 +79,14 @@ final class VocabImportService {
 
     /// Initialize all preset vocabularies
     func initializePresetVocabularies() async {
+        // Clean up any duplicate preset word books first.
+        // Among duplicates (same id), keep only the one with the earliest createdAt.
+        do {
+            try DatabaseService.shared.cleanupDuplicatePresetBooks()
+        } catch {
+            logger.error("Failed to clean up duplicate word books: \(error.localizedDescription)")
+        }
+
         for preset in PresetVocabulary.allCases {
             do {
                 try await importPresetVocabulary(preset)

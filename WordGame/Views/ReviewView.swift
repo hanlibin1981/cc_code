@@ -3,6 +3,7 @@ import SwiftUI
 /// Review view — presents review words as individual game-like levels.
 struct ReviewView: View {
     let book: WordBook
+    /// Shared GameViewModel — created once in ReviewView and passed down so GameView uses the same instance.
     @StateObject private var learningVM = LearningViewModel()
     @StateObject private var gameVM = GameViewModel()
     @Environment(\.dismiss) private var dismiss
@@ -45,6 +46,7 @@ struct ReviewView: View {
                 book: book,
                 level: level,
                 reviewWords: learningVM.reviewWords,
+                gameVM: gameVM,
                 onComplete: { result in
                     handleLevelComplete(level, result: result)
                 }
@@ -281,6 +283,8 @@ struct ReviewGameView: View {
     let book: WordBook
     let level: ReviewLevel
     let reviewWords: [Word]
+    /// Receives the shared GameViewModel from ReviewView so state is unified.
+    @ObservedObject var gameVM: GameViewModel
     let onComplete: (GameResult) -> Void
 
     /// Converts ReviewLevel to GameLevel for use with GameView
@@ -304,7 +308,8 @@ struct ReviewGameView: View {
             isReviewMode: true,
             reviewWords: reviewWords,
             onGameCompleted: onComplete,
-            onContinueToNext: nil
+            onContinueToNext: nil,
+            externalGameVM: gameVM
         )
     }
 }

@@ -14,10 +14,31 @@ final class WordBookViewModel: ObservableObject {
     private let database = DatabaseService.shared
     private let vocabImport = VocabImportService.shared
 
-    /// Initialize the app: load word books and import presets if needed
-    func initializeIfNeeded() async {
-        guard !isInitialized else { return }
+    /// Guards against concurrent initialization attempts.
+    /// Only the first caller runs the init; all subsequent callers await the same task.
+    private var initializationTask: Task<Void, Never>?
 
+    /// Initialize the app: load word books and import presets if needed.
+    /// Safe to call concurrently — only the first call performs actual work.
+    func initializeIfNeeded() async {
+        // If already initialized, nothing to do
+        if isInitialized { return }
+
+        // If an initialization task is already running, await it instead of starting another
+        if let existingTask = initializationTask {
+            await existingTask.value
+            return
+        }
+
+        let task = Task {
+            await performInitialization()
+        }
+        initializationTask = task
+        await task.value
+        initializationTask = nil
+    }
+
+    private func performInitialization() async {
         isLoading = true
         defer { isLoading = false }
 
@@ -77,12 +98,9 @@ final class WordBookViewModel: ObservableObject {
         await refreshWordBooks()
     }
 
-    /// Delete a word book
+    /// Delete a word book (supports both custom and preset word books).
+    /// Deleting a preset word book removes it from the database; it can be re-imported on next launch.
     func deleteWordBook(_ book: WordBook) async throws {
-        guard !book.isPreset else {
-            throw WordBookError.cannotDeletePreset
-        }
-
         try database.deleteWordBook(byId: book.id)
 
         if selectedBook?.id == book.id {

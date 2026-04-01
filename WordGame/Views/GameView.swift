@@ -21,8 +21,15 @@ struct GameView: View {
     /// Callback when user wants to continue to the next level.
     /// Called with (book, nextLevel) when tapped, nil when no next level.
     var onContinueToNext: ((WordBook, GameLevel) -> Void)?
+    /// When provided, the view uses this externally-owned GameViewModel instead of creating its own.
+    /// Enables parent views (e.g. ReviewView) to share state with the game.
+    var externalGameVM: GameViewModel?
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var gameVM = GameViewModel()
+    /// Use external VM if provided, otherwise create our own
+    @StateObject private var ownedGameVM = GameViewModel()
+    private var gameVM: GameViewModel {
+        externalGameVM ?? ownedGameVM
+    }
     @State private var userAnswer = ""
     /// Focus state for spelling/listening input field auto-focus after audio.
     @FocusState private var isInputFocused: Bool

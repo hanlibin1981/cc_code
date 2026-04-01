@@ -26,10 +26,24 @@ struct WordBookListView: View {
                 // Preset Vocabularies Section
                 Section("预置词库") {
                     ForEach(presetBooks) { book in
-                        WordBookRow(book: book)
-                            .onTapGesture {
-                                selectedBook = book
+                        HStack(spacing: 12) {
+                            WordBookRow(book: book)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    selectedBook = book
+                                }
+
+                            Button {
+                                bookToDelete = book
+                                showDeleteAlert = true
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.errorRed.opacity(0.7))
                             }
+                            .buttonStyle(.plain)
+                            .padding(.trailing, 4)
+                        }
                     }
                 }
 
@@ -42,18 +56,24 @@ struct WordBookListView: View {
                             .italic()
                     } else {
                         ForEach(customBooks) { book in
-                            WordBookRow(book: book)
-                                .onTapGesture {
-                                    selectedBook = book
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) {
-                                        bookToDelete = book
-                                        showDeleteAlert = true
-                                    } label: {
-                                        Label("删除", systemImage: "trash")
+                            HStack(spacing: 12) {
+                                WordBookRow(book: book)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        selectedBook = book
                                     }
+
+                                Button {
+                                    bookToDelete = book
+                                    showDeleteAlert = true
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(.errorRed.opacity(0.7))
                                 }
+                                .buttonStyle(.plain)
+                                .padding(.trailing, 4)
+                            }
                         }
                     }
                 }
@@ -95,7 +115,11 @@ struct WordBookListView: View {
                     }
                 }
             } message: { book in
-                Text("确定要删除「\(book.name)」吗？此操作不可撤销。")
+                if book.isPreset {
+                    Text("确定要删除预置词库「\(book.name)」吗？删除后下次启动 App 会自动重新导入。")
+                } else {
+                    Text("确定要删除「\(book.name)」吗？此操作不可撤销。")
+                }
             }
         }
     }

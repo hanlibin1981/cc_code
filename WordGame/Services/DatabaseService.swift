@@ -273,7 +273,7 @@ final class DatabaseService: ObservableObject {
     // MARK: - WordBook Operations
     func createWordBook(_ book: WordBook) throws {
         try withDB { db in
-            let insert = wordBooks.insert(
+            let insert = wordBooks.insert(or: .replace,
                 wbId <- book.id,
                 wbName <- book.name,
                 wbDescription <- book.description,
@@ -377,6 +377,28 @@ final class DatabaseService: ObservableObject {
         }
     }
 
+    /// Remove duplicate preset word books, keeping only the oldest entry per ID.
+    /// Called at startup to clean up any duplicates left by previous race conditions.
+    func cleanupDuplicatePresetBooks() throws {
+        try withDB { db in
+            // Find duplicate preset book IDs (same id, keep oldest by createdAt)
+            let duplicates = """
+                DELETE FROM word_books
+                WHERE is_preset = 1
+                AND rowid NOT IN (
+                    SELECT MIN(rowid)
+                    FROM word_books
+                    WHERE is_preset = 1
+                    GROUP BY id
+                )
+                """
+            try db.execute(duplicates)
+
+            // Also clean up orphaned words from deleted duplicate books
+            try db.execute("DELETE FROM words WHERE book_id NOT IN (SELECT id FROM word_books)")
+        }
+    }
+
     // MARK: - Word Operations
     func createWord(_ word: Word) throws {
         try withDB { db in
@@ -422,8 +444,9 @@ final class DatabaseService: ObservableObject {
     func createWordBookAndWordsAtomically(book: WordBook, words wordList: [Word]) throws {
         try withDB { db in
             try db.transaction {
-                // Insert word book
-                let bookInsert = wordBooks.insert(
+                // Insert word book — INSERT OR REPLACE ensures no duplicates even under
+                // concurrent initialization attempts.
+                let bookInsert = wordBooks.insert(or: .replace,
                     wbId <- book.id,
                     wbName <- book.name,
                     wbDescription <- book.description,
@@ -434,9 +457,13 @@ final class DatabaseService: ObservableObject {
                 )
                 try db.run(bookInsert)
 
+                // Delete any existing words for this book before inserting new ones.
+                // Combined with INSERT OR REPLACE above, this ensures clean replace semantics.
+                try db.run(words.filter(wBookId == book.id).delete())
+
                 // Insert all words
                 for word in wordList {
-                    let wordInsert = words.insert(
+                    let wordInsert = words.insert(or: .replace,
                         wId <- word.id,
                         wBookId <- word.bookId,
                         wWord <- word.word,

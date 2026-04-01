@@ -174,7 +174,7 @@ final class LearningViewModel: ObservableObject {
     // MARK: - Ebbinghaus Review Method
 
     /// Maximum number of words per review session
-    private let maxReviewWords = 30
+    private let maxReviewWords = 100
 
     /// Review intervals in days for each mastery level (Ebbinghaus forgetting curve)
     /// Level 0: review immediately, Level 1: 1 day, Level 2: 3 days, Level 3: 7 days, Level 4: 14 days, Level 5: 30 days
@@ -274,7 +274,8 @@ final class LearningViewModel: ObservableObject {
             // Load persisted completed review level IDs from database
             let completedIds = try database.fetchCompletedReviewLevelIds(bookId: book.id)
 
-            // Generate review levels from loaded words, marking completed ones as studied
+            // Always generate exactly one review level containing ALL loaded words.
+            // Previous level state is discarded — we rebuild fresh each time.
             reviewLevels = generateReviewLevels(from: reviewWords, completedIds: completedIds)
 
             currentIndex = 0
