@@ -697,6 +697,28 @@ final class DatabaseService: ObservableObject {
         }
     }
 
+    func fetchAllLearningRecords() throws -> [LearningRecord] {
+        try withDB { db in
+            var result: [LearningRecord] = []
+            let query = learningRecords.order(lrCreatedAt.desc)
+
+            for row in try db.prepare(query) {
+                let record = LearningRecord(
+                    id: row[lrId],
+                    wordId: row[lrWordId],
+                    bookId: row[lrBookId],
+                    result: row[lrResult],
+                    questionType: QuestionType(rawValue: row[lrQuestionType]) ?? .choice,
+                    answerTimeMs: row[lrAnswerTimeMs],
+                    createdAt: Date(timeIntervalSince1970: row[lrCreatedAt])
+                )
+                result.append(record)
+            }
+
+            return result
+        }
+    }
+
     func fetchLearningRecords(forWordId wordId: String) throws -> [LearningRecord] {
         try withDB { db in
             var result: [LearningRecord] = []

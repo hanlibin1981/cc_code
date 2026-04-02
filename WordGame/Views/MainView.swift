@@ -27,12 +27,19 @@ struct MainView: View {
                 }
                 .tag(1)
 
+            // My Page Tab
+            MyPageView()
+                .tabItem {
+                    Label("我的", systemImage: "person.fill")
+                }
+                .tag(2)
+
             // Settings Tab
             SettingsView()
                 .tabItem {
                     Label("设置", systemImage: "gear")
                 }
-                .tag(2)
+                .tag(3)
         }
         .frame(minWidth: 960, minHeight: 680)
     }
