@@ -719,6 +719,69 @@ final class DatabaseService: ObservableObject {
         }
     }
 
+    // MARK: - Statistics Aggregation Methods
+
+    /// Count unique words learned (correct answers only)
+    func fetchUniqueWordsLearnedCount() throws -> Int {
+        try withDB { db in
+            let query = "SELECT COUNT(DISTINCT word_id) FROM learning_records WHERE result = 1"
+            if let count = try db.scalar(query) as? Int64 {
+                return Int(count)
+            }
+            return 0
+        }
+    }
+
+    /// Count unique learning days
+    func fetchUniqueLearningDaysCount() throws -> Int {
+        try withDB { db in
+            let query = """
+                SELECT COUNT(DISTINCT date(created_at, 'unixepoch', 'localtime'))
+                FROM learning_records
+            """
+            if let count = try db.scalar(query) as? Int64 {
+                return Int(count)
+            }
+            return 0
+        }
+    }
+
+    /// Fetch learning record counts grouped by day for a date range
+    /// Returns a dictionary mapping date (start of day) to record count
+    func fetchLearningRecordsCountByDay(startDate: Date, endDate: Date) throws -> [Date: Int] {
+        try withDB { db in
+            let startTimestamp = startDate.timeIntervalSince1970
+            let endTimestamp = endDate.timeIntervalSince1970
+
+            // created_at is stored as seconds (timeIntervalSince1970), so use directly with unixepoch
+            let query = """
+                SELECT date(created_at, 'unixepoch', 'localtime') as day, COUNT(*) as count
+                FROM learning_records
+                WHERE result = 1 AND created_at >= ? AND created_at < ?
+                GROUP BY day
+            """
+
+            var result: [Date: Int] = [:]
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "yyyy-MM-dd"
+            dateFormatter.timeZone = TimeZone.current
+
+            let stmt = try db.prepare(query)
+            for row in try stmt.bind(startTimestamp, endTimestamp) {
+                if let dayString = row[0] as? String,
+                   let count = row[1] as? Int64,
+                   let date = dateFormatter.date(from: dayString) {
+                    // Normalize to start of day in local timezone
+                    let calendar = Calendar.current
+                    let startOfDay = calendar.startOfDay(for: date)
+                    result[startOfDay] = Int(count)
+                }
+            }
+
+            return result
+        }
+    }
+
     func fetchLearningRecords(forWordId wordId: String) throws -> [LearningRecord] {
         try withDB { db in
             var result: [LearningRecord] = []

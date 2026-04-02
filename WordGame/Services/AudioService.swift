@@ -12,26 +12,21 @@ final class AudioService: ObservableObject {
     @Published var lastError: String?
 
     private var audioPlayer: AVAudioPlayer?
-    /// Counter for generating unique playback IDs (avoids delegate singleton overwrite)
-    private var playbackIdCounter: Int = 0
-    /// Active speech synthesizer callbacks keyed by playback ID
-    private var speechCallbacks: [Int: () -> Void] = [:]
     /// Currently running say process (for interruption)
     private var sayProcess: Process?
+    /// Single callback for speech finish (simplified since stop() ensures single speech at a time)
+    private var speechDidFinish: (() -> Void)?
 
     private let synthesizer = AVSpeechSynthesizer()
     private let delegateHandler = SpeechDelegateHandler()
 
     private init() {
         synthesizer.delegate = delegateHandler
-        delegateHandler.onSpeechFinish = { [weak self] id in
+        delegateHandler.onSpeechFinish = { [weak self] in
             DispatchQueue.main.async {
-                self?.speechCallbacks[id]?()
-                self?.speechCallbacks[id] = nil
-                // Only mark not playing when ALL pending speech calls are done
-                if self?.speechCallbacks.isEmpty == true {
-                    self?.isPlaying = false
-                }
+                self?.speechDidFinish?()
+                self?.speechDidFinish = nil
+                self?.isPlaying = false
             }
         }
         setupAudioSession()
@@ -79,9 +74,6 @@ final class AudioService: ObservableObject {
         utterance.volume = 1.0
 
         isPlaying = true
-        playbackIdCounter += 1
-        let id = playbackIdCounter
-
         synthesizer.speak(utterance)
         #endif
     }
@@ -133,8 +125,8 @@ final class AudioService: ObservableObject {
             process.terminate()
         }
         sayProcess = nil
+        speechDidFinish = nil
         isPlaying = false
-        speechCallbacks.removeAll()
     }
 
     // MARK: - Word Audio Playback
@@ -241,13 +233,11 @@ private class URLPlaybackHandler: NSObject, AVAudioPlayerDelegate {
 }
 
 // MARK: - Speech Delegate Handler
-/// Stores speech finish callbacks keyed by playback ID so concurrent TTS calls don't overwrite each other.
+/// Handles speech synthesizer delegate callbacks with a single callback (since stop() ensures single speech at a time).
 private class SpeechDelegateHandler: NSObject, AVSpeechSynthesizerDelegate {
-    var onSpeechFinish: ((Int) -> Void)?
+    var onSpeechFinish: (() -> Void)?
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        // All utterances share the same delegate; fire all registered callbacks.
-        // (In practice only one speech call runs at a time due to `stop()` in playWordAudio.)
-        onSpeechFinish?(0)
+        onSpeechFinish?()
     }
 }

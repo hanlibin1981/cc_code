@@ -288,14 +288,9 @@ class MyPageViewModel: ObservableObject {
 
     private func fetchStats() {
         do {
-            let records = try DatabaseService.shared.fetchAllLearningRecords()
-            // Count unique words learned (correct answers only)
-            let uniqueWords = Set(records.filter { $0.result }.map { $0.wordId })
-            totalWordsLearned = uniqueWords.count
-
-            // Count unique learning days
-            let daySet = Set(records.map { calendar.startOfDay(for: $0.createdAt) })
-            totalLearningDays = daySet.count
+            // Use SQL aggregation instead of loading all records into memory
+            totalWordsLearned = try DatabaseService.shared.fetchUniqueWordsLearnedCount()
+            totalLearningDays = try DatabaseService.shared.fetchUniqueLearningDaysCount()
         } catch {
             totalWordsLearned = 0
             totalLearningDays = 0
@@ -313,15 +308,10 @@ class MyPageViewModel: ObservableObject {
         let rangeStart = monthFirstWeek.start
         let rangeEnd = calendar.date(byAdding: .month, value: 2, to: monthInterval.start)!
 
+        // Use SQL aggregation instead of loading all records
         var recordsByDay: [Date: Int] = [:]
         do {
-            let allRecords = try DatabaseService.shared.fetchAllLearningRecords()
-            for record in allRecords where record.result {
-                let day = calendar.startOfDay(for: record.createdAt)
-                if day >= rangeStart && day < rangeEnd {
-                    recordsByDay[day, default: 0] += 1
-                }
-            }
+            recordsByDay = try DatabaseService.shared.fetchLearningRecordsCountByDay(startDate: rangeStart, endDate: rangeEnd)
         } catch { /* ignore */ }
 
         var days: [CalendarDay] = []
