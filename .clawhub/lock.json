@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "skills": {
+    "self-improving-agent": {
+      "version": "3.0.4",
+      "installedAt": 1773710822964
+    },
+    "tushare-stock-skill": {
+      "version": "1.0.3",
+      "installedAt": 1773768542820
+    },
+    "skill-vetter": {
+      "version": "1.0.0",
+      "installedAt": 1774582803048
+    },
+    "openclaw-tavily-search": {
+      "version": "0.1.0",
+      "installedAt": 1774582921465
+    },
+    "openclaw-backup": {
+      "version": "1.0.0",
+      "installedAt": 1774583101476
+    },
+    "xcode": {
+      "version": "1.0.0",
+      "installedAt": 1774587438518
+    },
+    "xcodebuildmcp": {
+      "version": "1.0.0",
+      "installedAt": 1774587546244
+    },
+    "superpowers": {
+      "version": "1.0.0",
+      "installedAt": 1774872905146
+    }
+  }
+}
