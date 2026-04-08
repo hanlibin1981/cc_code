@@ -477,3 +477,108 @@ withFixture(input, fixtureName, f):
 - 529专用退避，与普通429区分
 - 前台/后台来源的差异化重试策略
 - VCR fixture机制实现deterministic测试
+
+---
+
+## [主题11] sessionMemory.ts - 长期记忆系统（2026-04-08）
+
+### 核心机制
+
+Session Memory 是一个后台运行的 forked subagent，定期从对话历史中提取关键信息写入 markdown 文件。
+
+**关键特性**：
+- 使用 `runForkedAgent` 在后台异步运行，不阻塞主对话
+- 通过 `registerPostSamplingHook` 注册到 query loop 的后采样阶段
+- 触发阈值可配置：`hasMetInitializationThreshold` / `hasMetUpdateThreshold`
+- 支持等待提取完成：`waitForSessionMemoryExtraction`（用于 compaction）
+
+**缓存策略**：
+GrowthBook 配置使用 `getFeatureValue_CACHED_MAY_BE_STALE` 模式：
+- 立即返回缓存值，不阻塞 GrowthBook 初始化
+- 值可能是 stale（GrowthBook 还没初始化完）
+- 异步更新，更新后通过 `refreshed` signal 通知订阅者
+
+### 可借鉴设计
+- Fork agent 做后台记忆提取，与主查询解耦
+- Cached-may-be-stale 模式避免阻塞初始化
+- `using` 关键字管理资源生命周期
+
+---
+
+## [主题12] growthbook.ts - 实验/特性开关系统（2026-04-08）
+
+### 核心 API
+
+```typescript
+// 立即返回缓存值（不阻塞）
+getFeatureValue_CACHED_MAY_BE_STALE<T>(key, defaultValue): T
+
+// 阻塞直到初始化完成（用于安全关键检查）
+getFeatureValue_BLOCKS_ON_INIT<T>(key, defaultValue): T
+
+// 动态配置（也是 cached）
+getDynamicConfig_CACHED_MAY_BE_STALE(key): Record<string, unknown>
+
+// 监听刷新
+onGrowthBookRefresh(listener): () => void  // 返回取消订阅函数
+```
+
+### 特性开关加载策略
+
+| 场景 | API | 原因 |
+|------|-----|------|
+| 通用特性 | CACHED_MAY_BE_STALE | 不阻塞，不影响启动 |
+| 安全相关 | BLOCKS_ON_INIT | 必须等 GrowthBook 完成 |
+| 需要刷新感知 | onGrowthBookRefresh | 动态生效 |
+
+### ENV Override
+
+`CLAUDE_INTERNAL_FC_OVERRIDES`（Ant内部）允许覆盖任何特性开关值，用于测试特定配置。
+
+### 可借鉴设计
+- cached-may-be-stale vs blocking 的区分设计
+- `onGrowthBookRefresh` 订阅模式，支持动态生效
+- ENV override 机制用于测试
+
+---
+
+## [主题13] Tool.ts - 工具接口完整设计（2026-04-08）
+
+### 工具特性方法
+
+```typescript
+isEnabled(): boolean                    // 工具是否启用
+isConcurrencySafe(input): boolean       // 可并行执行？
+isReadOnly(input): boolean              // 只读操作？
+isDestructive(input): boolean           // 破坏性操作（delete/overwrite）？
+isSearchOrReadCommand(input): {          // UI折叠显示用
+  isSearch: boolean                     // 搜索操作
+  isRead: boolean                      // 读操作  
+  isList?: boolean                     // 列表操作
+}
+isOpenWorld(input): boolean             // 访问外部世界？
+requiresUserInteraction(): boolean      // 需要用户交互？
+interruptBehavior(): 'cancel' | 'block' // 被新消息中断时的行为
+```
+
+### 延迟加载机制
+
+```typescript
+shouldDefer: boolean    // defer_loading，需要ToolSearch才能调用
+alwaysLoad: boolean     // 从不defer，turn 1就加载
+```
+
+MCP工具通过 `_meta['anthropic/alwaysLoad']` 设置。
+
+### Result 大小管理
+
+```typescript
+maxResultSizeChars: number  // 结果超过此大小则持久化到磁盘
+```
+
+**关键设计**：设为 `Infinity` 的工具（如 Read）永远不会持久化，避免循环依赖。
+
+### 可借鉴设计
+- 丰富的特性方法支持细粒度调度决策
+- Result持久化到磁盘避免大结果撑爆上下文
+- backfillObservableInput 在观察前修改输入（保留API缓存）
