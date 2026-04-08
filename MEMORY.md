@@ -303,6 +303,141 @@ Claude Code 定义了大量消息类型（NormalizeMessage subtypes）：
 
 ---
 
+## [主题8] bashSecurity.ts - Bash命令安全验证（2026-04-08）
+
+### 核心设计：多层验证管道
+
+Claude Code 的 BashTool 安全验证极其细致，核心是 `bashCommandIsSafe_DEPRECATED` 函数，包含 20+ 个验证器，按顺序执行：
+
+**Early Validators（立即allow/passthrough）**：
+- `validateEmpty`：空命令直接allow
+- `validateIncompleteCommands`：不完整命令（tab开头、-开头、操作符开头）→ ask
+- `validateSafeCommandSubstitution`：安全的 heredoc `$(cat <<'DELIM'...)` → allow
+- `validateGitCommit`：git commit with simple quoted message → allow
+
+**Misparsing 检测器（isBashSecurityCheckForMisparsing）**：
+检测 shell-quote 和 bash 之间的解析差异，这是最危险的安全问题：
+
+| 检测项 | 攻击模式 |
+|--------|----------|
+| `validateCarriageReturn` | `TZ=UTC\recho curl` — shell-quote把CR当分隔符，bash不当 | 
+| `validateBackslashEscapedWhitespace` | `echo\ test/../../../bin/rm` → 路径解析差异 |
+| `validateBackslashEscapedOperators` | `cat safe.txt \; echo ~/.ssh/id_rsa` → splitCommand双重解析bug |
+| `validateBraceExpansion` | `git diff {--output=/tmp/pwned,test}` → 解析差异绕过 |
+| `validateMidWordHash` | `foo\<NL>#bar` → 注释解析差异 |
+| `validateQuotedNewline` | `'<'\n#'\nrm -rf /` → stripCommentLines 丢弃行 |
+
+**Obfuscation 检测**：
+- ANSI-C quoting `$'...'` / locale quoting `$"..."`
+- 空引号拼接 `""-exec` → 拼接成 `-exec`
+- 3+连续引号 `'''`
+- flag内嵌引号 `'-'exec`
+
+**Zsh 特殊危险命令**：
+`zmodload zsh/system`、`sysopen`、`ztcp`、`zpty` 等模块加载命令会绕过二进制检查。
+
+**Tree-sitter 增强**：
+当 tree-sitter 可用时，用 AST 而非 regex 做 quote tracking，更准确。
+
+### 可借鉴设计
+- shell-quote vs bash 的 parsing differential 是核心威胁模型
+- 所有安全检查的决策都要有 `isBashSecurityCheckForMisparsing` 标记
+- 详细的注释说明每个安全检查对应的 CVE/exploit 原理
+- 引号状态机追踪（单引号内忽略双引号，双引号内单引号为literal）
+
+---
+
+## [主题9] pathValidation.ts - 路径访问控制（2026-04-08）
+
+### PATH_EXTRACTORS 系统
+
+每种命令有专属的路径提取逻辑（而非统一split）：
+
+```typescript
+ls: filterOutFlags → 默认 '.'
+find: 收集非flag参数 + -newer/-path等path-taking flags
+rm/mv/cp: filterOutFlags（处理 `--` 分隔符）
+grep/rg: pattern然后paths
+sed: -f标志指向脚本文件需要验证
+jq: filter然后file paths
+```
+
+### 安全关键设计
+
+**`--` 端选项分隔符处理**：
+```
+rm -- -/../.ssh/id_rsa
+```
+Naive `!arg.startsWith('-')` 会漏掉 `-/../.ssh/id_rsa`（攻击payload）。正确做法：在 `--` 之后接受所有参数。
+
+**cd + write 组合禁止**：
+Compound command 含 cd 时执行写操作，必须手动批准（防止相对路径解析被cd绕过）。
+
+**Dangerous Removal Path 检测**：
+`rm -rf /` 等灾难性操作永远要求显式批准，不受 allowlist 规则约束。
+
+**Process Substitution 禁止**：
+`>(cmd)` / `<(cmd)` 必须手动批准，因为写入的文件路径不在重定向目标中。
+
+### 可借鉴设计
+- 命令专用路径提取器而非通用split
+- 环境变量/预命令修饰符（timeout, nice, nohup, stdbuf, env）剥离后再验证
+- 所有flag后的下一参数如果是路径也要验证
+
+---
+
+## [主题10] query.ts - 主查询循环（2026-04-08）
+
+### 核心结构
+
+```
+query() → queryLoop() → 无限循环 + yield*
+```
+
+每个 iteration：
+1. skill discovery prefetch（异步，不阻塞）
+2. yield `{ type: 'stream_request_start' }`
+3. 调用 model（with streaming + fallback）
+4. 处理 stream events / tool_use blocks
+5. 运行 StreamingToolExecutor 执行工具
+6. 处理 tool results
+7. 可选：autoCompact 触发
+8. 循环直到 stop/reduce/return
+
+### 关键状态
+
+```typescript
+type State = {
+  messages: Message[]
+  toolUseContext: ToolUseContext  // 每次迭代可重赋值
+  autoCompactTracking: AutoCompactTrackingState
+  stopHookActive: boolean
+  maxOutputTokensOverride: number | undefined
+  pendingToolUseSummary: ToolUseSummaryMessage | undefined
+  turnCount: number
+}
+```
+
+### 特性开关模块化
+
+```typescript
+const reactiveCompact = feature('REACTIVE_COMPACT') 
+  ? require('./services/compact/reactiveCompact.js') : null
+const contextCollapse = feature('CONTEXT_COLLAPSE')
+  ? require('./services/contextCollapse/index.js') : null
+const skillPrefetch = feature('EXPERIMENTAL_SKILL_SEARCH')
+  ? require('./services/skillSearch/prefetch.js') : null
+```
+
+所有特性开关的模块都懒加载，bundled by bun:bundle。
+
+### 可借鉴设计
+- `using` 关键字自动 dispose 资源（pendingMemoryPrefetch）
+- yield* 递归 generator 实现流式处理
+- Immutable params + mutable state 分离
+
+---
+
 ## [主题7] withRetry + VCR - 重试与测试框架（2026-04-08）
 
 ### withRetry 退避策略
