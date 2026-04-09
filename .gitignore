@@ -55,3 +55,6 @@ WordGame.xcodeproj/
 
 # Backup files
 *.bak
+
+# cc_code build
+cc_code/target/
