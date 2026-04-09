@@ -1,0 +1,53 @@
+[package]
+name = "cc_code"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+description = "OpenClaw 编程开发助手 - MCP 服务器"
+authors = ["cc_code team"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# MCP Server SDK
+rust-mcp-sdk = "0.9"
+
+# HTTP client for model API
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# UUID for sessions
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# DateTime
+chrono = { version = "0.4", features = ["serde"] }
+
+# Async traits
+async-trait = "0.1"
+
+# Futures utilities
+futures = "0.3"
+futures-util = "0.3"
+
+# ByteString handling
+bytes = "1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockito = "1"
+
+[[bin]]
+name = "cc_code"
+path = "src/main.rs"
