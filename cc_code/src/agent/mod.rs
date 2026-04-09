@@ -3,9 +3,10 @@
 
 mod task;
 
-pub use task::TaskPlanner;
 
-use crate::session::memory::{compact_session, needs_compaction};
+
+
+use crate::session::memory::compact_session;
 use crate::session::{MessageRole, Session, SessionManager, SessionState};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -29,7 +30,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            model_url: "https://api.minimaxi.chat/v1/text/chatcompletion_v2".into(),
+            model_url: "https://api.minimaxi.com/anthropic/v1/messages".into(),
             api_key: std::env::var("MINIMAX_API_KEY").unwrap_or_default(),
             model_name: "MiniMax-M2".into(),
             system_prompt: SYSTEM_PROMPT.into(),
@@ -106,9 +107,13 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(config: AgentConfig) -> Self {
+        Self::with_sessions(config, Arc::new(RwLock::new(SessionManager::new())))
+    }
+
+    pub fn with_sessions(config: AgentConfig, sessions: Arc<RwLock<SessionManager>>) -> Self {
         Self {
             config,
-            sessions: Arc::new(RwLock::new(SessionManager::new())),
+            sessions,
             http_client: reqwest::Client::new(),
         }
     }
@@ -141,8 +146,8 @@ impl Agent {
         session_id: uuid::Uuid,
         message: String,
     ) -> Result<AgentResponse, AgentError> {
-        // 获取或创建 session
-        let session = {
+        // 获取 tool_results（需要 &mut session，所以先做）
+        let tool_results = {
             let mut manager = self.sessions.write().await;
             let session = manager
                 .get_session_mut(&session_id)
@@ -150,18 +155,26 @@ impl Agent {
 
             // 添加用户消息
             session.add_message(MessageRole::User, message.clone());
-            session.set_state(SessionState::Executing);
 
             // 检查是否需要压缩
-            if needs_compaction(session) {
+            if session.needs_compaction() {
                 compact_session(session);
             }
 
-            session.clone()
+            session.drain_tool_results()
+        };
+
+        // 获取 session 克隆（用于构建 prompt）
+        let session = {
+            let manager = self.sessions.read().await;
+            manager
+                .get_session(&session_id)
+                .ok_or_else(|| AgentError::SessionNotFound(session_id))?
+                .clone()
         };
 
         // 构建 prompt
-        let prompt = self.build_prompt(&session);
+        let prompt = self.build_prompt(&session, tool_results);
 
         // 调用模型
         let response = self.call_model(&prompt).await?;
@@ -233,7 +246,7 @@ impl Agent {
                 .clone()
         };
 
-        let prompt = self.build_prompt(&session);
+        let prompt = self.build_prompt(&session, vec![]);
         let response = self.call_model(&prompt).await?;
 
         let (text, tool_calls) = self.parse_response(&response);
@@ -262,7 +275,7 @@ impl Agent {
     }
 
     /// 构建发送给模型的 prompt
-    fn build_prompt(&self, session: &Session) -> String {
+    fn build_prompt(&self, session: &Session, tool_results: Vec<crate::session::SimpleToolResult>) -> String {
         let mut prompt = format!(
             "{}\n\n## 当前会话\n\n工作目录: {}\n\n## 对话历史:\n",
             self.config.system_prompt,
@@ -279,7 +292,15 @@ impl Agent {
             prompt.push_str(&format!("\n[{}]\n{}\n", role_str, msg.content));
         }
 
-        // 如果有未处理的工具结果
+        // 工具执行结果（来自 OpenClaw 执行后反馈）
+        if !tool_results.is_empty() {
+            prompt.push_str("\n## 工具执行结果:\n");
+            for result in &tool_results {
+                let prefix = if result.is_error { "错误" } else { "结果" };
+                prompt.push_str(&format!("[{}] {}: {}\n", result.tool, prefix, result.result));
+            }
+        }
+        // 旧的 tool_results (by ID)
         if !session.tool_results.is_empty() {
             prompt.push_str("\n## 待处理工具结果:\n");
             for (id, result) in &session.tool_results {
@@ -293,37 +314,39 @@ impl Agent {
 
     /// 调用模型 API
     async fn call_model(&self, prompt: &str) -> Result<String, AgentError> {
+        // Anthropic Messages API 格式
         #[derive(Serialize)]
-        struct ChatRequest {
+        struct AnthropicRequest {
             model: String,
-            messages: Vec<ChatMessage>,
+            messages: Vec<AnthropicMessage>,
             max_tokens: u32,
         }
 
         #[derive(Serialize)]
-        struct ChatMessage {
+        struct AnthropicMessage {
             role: String,
             content: String,
         }
 
         #[derive(Deserialize)]
-        struct ChatResponse {
-            choices: Vec<Choice>,
+        struct AnthropicResponse {
+            content: Vec<ContentBlock>,
         }
 
         #[derive(Deserialize)]
-        struct Choice {
-            message: ResponseMessage,
+        #[serde(tag = "type")]
+        enum ContentBlock {
+            #[serde(rename = "text")]
+            Text { text: String },
+            #[serde(rename = "thinking")]
+            Thinking { thinking: String },
+            #[serde(rename = "tool_use")]
+            ToolUse { id: String, name: String, input: serde_json::Value },
         }
 
-        #[derive(Deserialize)]
-        struct ResponseMessage {
-            content: String,
-        }
-
-        let request = ChatRequest {
+        let request = AnthropicRequest {
             model: self.config.model_name.clone(),
-            messages: vec![ChatMessage {
+            messages: vec![AnthropicMessage {
                 role: "user".into(),
                 content: prompt.into(),
             }],
@@ -335,6 +358,7 @@ impl Agent {
             .post(&self.config.model_url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
+            .header("anthropic-version", "2023-06-01")
             .json(&request)
             .send()
             .await
@@ -350,12 +374,26 @@ impl Agent {
             )));
         }
 
-        let chat_response: ChatResponse = response
+        let chat_response: AnthropicResponse = response
             .json()
             .await
             .map_err(|e| AgentError::ModelError(e.to_string()))?;
 
-        Ok(chat_response.choices[0].message.content.clone())
+        // 从 Anthropic content 数组中提取文本（忽略 thinking 块）
+        let text = chat_response
+            .content
+            .iter()
+            .filter_map(|block| {
+                match block {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    ContentBlock::Thinking { .. } => None,
+                    ContentBlock::ToolUse { .. } => None,
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Ok(text)
     }
 
     /// 解析模型响应，提取文本和工具调用

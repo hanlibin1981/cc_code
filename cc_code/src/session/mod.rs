@@ -3,7 +3,7 @@
 
 pub mod memory;
 
-pub use memory::{compact_session, needs_compaction, summarize_session};
+
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,7 @@ pub struct Session {
     pub messages: Vec<SessionMessage>,
     pub tools: Vec<String>,                        // 可用工具列表
     pub tool_results: HashMap<String, ToolResult>, // 工具ID -> 结果
+    pub simple_tool_results: Vec<SimpleToolResult>, // 简化结果（OpenClaw反馈）
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +73,14 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
+/// 简化的工具结果（由 OpenClaw 执行后反馈）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimpleToolResult {
+    pub tool: String,
+    pub result: String,
+    pub is_error: bool,
+}
+
 impl Session {
     pub fn new(cwd: std::path::PathBuf) -> Self {
         let now = Utc::now();
@@ -84,6 +93,7 @@ impl Session {
             messages: Vec::new(),
             tools: Vec::new(),
             tool_results: HashMap::new(),
+            simple_tool_results: Vec::new(),
         }
     }
 
@@ -122,6 +132,30 @@ impl Session {
             },
         );
         self.updated_at = Utc::now();
+    }
+
+    /// 添加简化工具结果（由 OpenClaw 执行后反馈）
+    pub fn add_simple_tool_result(&mut self, tool: String, result: String, is_error: bool) {
+        self.simple_tool_results.push(SimpleToolResult {
+            tool,
+            result,
+            is_error,
+        });
+        self.updated_at = Utc::now();
+    }
+
+    /// 获取并清空累积的工具结果（供 Agent 使用）
+    pub fn drain_tool_results(&mut self) -> Vec<SimpleToolResult> {
+        let results = self.simple_tool_results.clone();
+        self.simple_tool_results.clear();
+        results
+    }
+
+    /// 检查是否需要压缩（基于字符数估算）
+    pub fn needs_compaction(&self) -> bool {
+        let total_chars: usize = self.messages.iter().map(|m| m.content.len()).sum();
+        const MAX_TOKEN_ESTIMATE: usize = 80_000;
+        total_chars > MAX_TOKEN_ESTIMATE
     }
 
     pub fn get_history(&self) -> Vec<(MessageRole, String)> {

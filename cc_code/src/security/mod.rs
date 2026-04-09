@@ -3,8 +3,6 @@
 
 mod bash_guard;
 
-pub use bash_guard::{BashGuard, CommandSafety};
-
 /// 权限模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionMode {
