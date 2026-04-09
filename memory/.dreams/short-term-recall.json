@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-04-09T01:14:25.447Z",
+  "updatedAt": "2026-04-09T03:14:36.139Z",
   "entries": {
     "memory:memory/2026-03-22.md:1:18": {
       "key": "memory:memory/2026-03-22.md:1:18",
@@ -9,22 +9,24 @@
       "endLine": 18,
       "source": "memory",
       "snippet": "# 2026-03-22 工作日志 ## 股票监控 Cron Job - 时间: 14:41 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周末 14:41) - 状态: ✅ 正常 - 时间: 12:23 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周末 12:23) - 状态: ✅ 正常 - 时间: 00:16 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周日午夜 00:16) - 状态: ✅ 正常",
-      "recallCount": 5,
+      "recallCount": 6,
       "dailyCount": 0,
-      "totalScore": 3.534236566245638,
-      "maxScore": 0.7393689660045505,
+      "totalScore": 4.449729220862553,
+      "maxScore": 0.9154926546169145,
       "firstRecalledAt": "2026-04-07T07:22:25.957Z",
-      "lastRecalledAt": "2026-04-08T11:35:34.749Z",
+      "lastRecalledAt": "2026-04-09T03:14:36.139Z",
       "queryHashes": [
         "53cd714f1bd2",
         "33bc0379c3a9",
         "2454a9c55f2a",
         "b4aad1a3b282",
-        "38cec54af6d2"
+        "38cec54af6d2",
+        "adfad5b322c8"
       ],
       "recallDays": [
         "2026-04-07",
-        "2026-04-08"
+        "2026-04-08",
+        "2026-04-09"
       ],
       "conceptTags": [
         "stock-signal-monitor",
@@ -45,12 +47,12 @@
       "endLine": 23,
       "source": "memory",
       "snippet": "# 2026-03-21 工作日志 ## 股票监控 Cron Job - 时间: 06:07 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周末 06:07) - 状态: ✅ 正常 ## 股票监控 Cron Job - 时间: 07:11 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周末 07:11) - 状态: ✅ 正常 ## 股票监控 Cron Job - 时间: 14:02 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周末 14:02) - 状态: ✅ 正常 ## 待办 -",
-      "recallCount": 7,
+      "recallCount": 8,
       "dailyCount": 0,
-      "totalScore": 5.1330341475699734,
-      "maxScore": 0.785513426783559,
+      "totalScore": 6.0568536191886855,
+      "maxScore": 0.9238194716187121,
       "firstRecalledAt": "2026-04-07T07:22:25.957Z",
-      "lastRecalledAt": "2026-04-08T11:35:34.749Z",
+      "lastRecalledAt": "2026-04-09T03:14:36.139Z",
       "queryHashes": [
         "53cd714f1bd2",
         "33bc0379c3a9",
@@ -62,7 +64,8 @@
       ],
       "recallDays": [
         "2026-04-07",
-        "2026-04-08"
+        "2026-04-08",
+        "2026-04-09"
       ],
       "conceptTags": [
         "stock-signal-monitor",
@@ -83,12 +86,12 @@
       "endLine": 13,
       "source": "memory",
       "snippet": "# 2026-03-23 工作日志 ## 股票监控 Cron Job - 时间: 21:00 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周一晚9:00) - 状态: ✅ 正常 - 时间: 01:35 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周一凌晨 01:35) - 状态: ✅ 正常",
-      "recallCount": 7,
+      "recallCount": 8,
       "dailyCount": 0,
-      "totalScore": 4.980742760574679,
-      "maxScore": 0.7429682209045166,
+      "totalScore": 5.896259518965037,
+      "maxScore": 0.9155167583903578,
       "firstRecalledAt": "2026-04-07T07:22:25.957Z",
-      "lastRecalledAt": "2026-04-08T11:35:34.749Z",
+      "lastRecalledAt": "2026-04-09T03:14:36.139Z",
       "queryHashes": [
         "53cd714f1bd2",
         "33bc0379c3a9",
@@ -100,7 +103,8 @@
       ],
       "recallDays": [
         "2026-04-07",
-        "2026-04-08"
+        "2026-04-08",
+        "2026-04-09"
       ],
       "conceptTags": [
         "stock-signal-monitor",
@@ -191,12 +195,12 @@
       "endLine": 7,
       "source": "memory",
       "snippet": "## 股票监控 Cron Job - 时间: 00:21 - 任务: stock-signal-monitor - 结果: 非交易时间，跳过（周一凌晨00:21） - 状态: ✅ 正常",
-      "recallCount": 5,
+      "recallCount": 6,
       "dailyCount": 0,
-      "totalScore": 3.6477176719992324,
-      "maxScore": 0.7625902177573742,
+      "totalScore": 4.5614844541174016,
+      "maxScore": 0.9137667821181691,
       "firstRecalledAt": "2026-04-07T12:58:30.182Z",
-      "lastRecalledAt": "2026-04-08T11:35:34.749Z",
+      "lastRecalledAt": "2026-04-09T03:14:36.139Z",
       "queryHashes": [
         "33bc0379c3a9",
         "a3aa8ac4eb2f",
@@ -206,7 +210,8 @@
       ],
       "recallDays": [
         "2026-04-07",
-        "2026-04-08"
+        "2026-04-08",
+        "2026-04-09"
       ],
       "conceptTags": [
         "stock-signal-monitor",

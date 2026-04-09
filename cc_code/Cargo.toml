@@ -13,6 +13,9 @@ tokio = { version = "1", features = ["full"] }
 # MCP Server SDK
 rust-mcp-sdk = "0.9"
 
+# Regex for tool call parsing
+regex = "1"
+
 # HTTP client for model API
 reqwest = { version = "0.12", features = ["json"] }
 

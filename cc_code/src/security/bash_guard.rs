@@ -24,6 +24,15 @@ impl CommandSafety {
     pub fn is_dangerous(&self) -> bool {
         matches!(self, CommandSafety::Dangerous | CommandSafety::Deny)
     }
+
+    pub fn message(&self) -> &str {
+        match self {
+            CommandSafety::Allow => "",
+            CommandSafety::Dangerous => "危险命令",
+            CommandSafety::Deny => "禁止执行的命令",
+            CommandSafety::Ask => "需要用户确认",
+        }
+    }
 }
 
 /// Bash 命令安全守卫
@@ -151,14 +160,14 @@ impl BashGuard {
     }
 
     /// 检测路径穿越
-    fn contains_path_traversal(&self, command: &str) -> bool {
+    pub fn contains_path_traversal(&self, path: &str) -> bool {
         // ../ 路径穿越
-        if command.contains("../") || command.contains("..\\") {
+        if path.contains("../") || path.contains("..\\") {
             return true;
         }
 
         // ~ 展开攻击（简单检测）
-        if command.contains("~root") || command.contains("~admin") {
+        if path.contains("~root") || path.contains("~admin") {
             return true;
         }
 

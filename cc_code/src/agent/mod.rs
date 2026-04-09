@@ -47,22 +47,27 @@ const SYSTEM_PROMPT: &str = r#"你是 cc_code，一个专业的编程开发助�
 3. 通过工具调用完成编码任务
 4. 及时汇报进度和结果
 
-可用工具（通过 MCP 协议调用）：
-- read_file: 读取文件内容
-- write_file: 写入文件内容
-- edit_file: 编辑文件
-- bash: 执行 Shell 命令
-- glob: 文件搜索
-- grep: 内容搜索
-
 工作流程：
-1. 理解任务 → 2. 规划步骤 → 3. 执行工具 → 4. 检查结果 → 5. 完成或继续
+1. 理解任务 → 2. 规划步骤 → 3. 必要时调用工具 → 4. 检查结果 → 5. 完成或继续
 
 重要原则：
-- 每次只执行一个工具调用，等待结果后再继续
 - 文件操作前先读取确认内容
 - Bash 命令要谨慎，特别是 rm mv 等危险操作
 - 遇到错误要分析原因并调整策略
+
+工具调用格式（必须使用）：
+当需要调用工具时，在回复末尾添加：
+[TOOL_CALL:{"name":"tool_name","arguments":{"param1":"value1"}}]
+
+可用工具：
+- read_file: 读取文件，参数: path
+- write_file: 写入文件，参数: path, content
+- edit_file: 编辑文件，参数: path, old_text, new_text
+- bash: 执行命令，参数: command
+- glob: 文件搜索，参数: pattern
+- grep: 内容搜索，参数: pattern, path
+
+重要：每个回复只能包含一个工具调用。如果不需要工具，直接回复分析结果。
 "#;
 
 /// Agent 响应
@@ -354,51 +359,94 @@ impl Agent {
     }
 
     /// 解析模型响应，提取文本和工具调用
+    /// 格式: [TOOL_CALL:{"name":"tool_name","arguments":{...}}]
+    /// 或 markdown ```tool 块
     fn parse_response(&self, response: &str) -> (String, Vec<ToolCallRequest>) {
-        // 简单解析：查找 ```tool 块
-        // 格式: ```tool
-        // {"name": "read_file", "arguments": {"path": "..."}}
-        // ```
-
         let mut text = String::new();
         let mut tool_calls = Vec::new();
-        let mut in_tool_block = false;
-        let mut tool_json = String::new();
 
-        for line in response.lines() {
-            if line.trim() == "```tool" {
-                in_tool_block = true;
-                tool_json.clear();
-            } else if line.trim() == "```" && in_tool_block {
-                in_tool_block = false;
-                // 解析工具调用 JSON
-                if let Ok(tool_call) = serde_json::from_str::<serde_json::Value>(&tool_json) {
-                    let id = uuid::Uuid::new_v4().to_string();
-                    let name = tool_call
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
+        // 优先解析内联格式: [TOOL_CALL:{...}]
+        // 这比 markdown 块更可靠
+        let tool_call_regex = regex::Regex::new(
+            r"\[TOOL_CALL\s*:\s*(\{.*?\})\s*\]"
+        ).unwrap();
 
-                    let arguments: std::collections::HashMap<String, serde_json::Value> = tool_call
-                        .get("arguments")
-                        .and_then(|v| v.as_object())
-                        .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                        .unwrap_or_default();
+        let mut last_end = 0;
+        for cap in tool_call_regex.captures_iter(response) {
+            let start = cap.get(0).unwrap().start();
+            let json_str = cap.get(1).unwrap().as_str();
 
-                    tool_calls.push(ToolCallRequest {
-                        id,
-                        name,
-                        arguments,
-                    });
-                }
-            } else if in_tool_block {
-                tool_json.push_str(line);
-                tool_json.push('\n');
-            } else {
-                text.push_str(line);
-                text.push('\n');
+            // 累积之前的文本
+            text.push_str(&response[last_end..start]);
+            text.push('\n');
+
+            // 解析工具调用
+            if let Ok(tool_call) = serde_json::from_str::<serde_json::Value>(json_str) {
+                let id = uuid::Uuid::new_v4().to_string();
+                let name = tool_call
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                let arguments: std::collections::HashMap<String, serde_json::Value> = tool_call
+                    .get("arguments")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    .unwrap_or_default();
+
+                tool_calls.push(ToolCallRequest {
+                    id,
+                    name,
+                    arguments,
+                });
             }
+
+            last_end = cap.get(0).unwrap().end();
+        }
+
+        // 如果没有内联格式，尝试 markdown ```tool 块
+        if tool_calls.is_empty() {
+            let mut in_tool_block = false;
+            let mut tool_json = String::new();
+
+            for line in response.lines() {
+                if line.trim() == "```tool" {
+                    in_tool_block = true;
+                    tool_json.clear();
+                } else if line.trim() == "```" && in_tool_block {
+                    in_tool_block = false;
+                    if let Ok(tool_call) = serde_json::from_str::<serde_json::Value>(&tool_json) {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        let name = tool_call
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+
+                        let arguments: std::collections::HashMap<String, serde_json::Value> = tool_call
+                            .get("arguments")
+                            .and_then(|v| v.as_object())
+                            .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                            .unwrap_or_default();
+
+                        tool_calls.push(ToolCallRequest {
+                            id,
+                            name,
+                            arguments,
+                        });
+                    }
+                } else if in_tool_block {
+                    tool_json.push_str(line);
+                    tool_json.push('\n');
+                } else {
+                    text.push_str(line);
+                    text.push('\n');
+                }
+            }
+        } else {
+            // 累积剩余文本
+            text.push_str(&response[last_end..]);
         }
 
         (text.trim().to_string(), tool_calls)

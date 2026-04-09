@@ -8,16 +8,17 @@ mod security;
 mod session;
 mod tools;
 
-use agent::{Agent, AgentConfig, AgentResponse};
+use agent::{Agent, AgentConfig};
 use mcp::{
     CallToolInput, CallToolResult, ContentBlock, JsonRpcRequest, JsonRpcResponse, ListToolsResult,
     ServerCapabilities, Tool,
 };
-use model::MiniMaxModel;
 use security::BashGuard;
 use session::SessionManager;
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
+use tokio::fs;
+use tokio::process::Command;
 use tokio::runtime::Runtime;
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -98,22 +99,39 @@ fn main() {
         // 处理请求
         let response = rt.block_on(handle_request(&request, &state));
 
-        // 发送响应
-        let response_json = serde_json::to_string(&response).unwrap_or_else(|_| {
-            serde_json::to_string(&JsonRpcResponse::error(None, -32603, "Internal error"))
-                .unwrap_or_default()
-        });
+        // 只对有 id 的请求发送响应（notification 返回 None）
+        if let Some(response) = response {
+            let response_json = serde_json::to_string(&response).unwrap_or_else(|_| {
+                serde_json::to_string(&JsonRpcResponse::error(None, -32603, "Internal error"))
+                    .unwrap_or_default()
+            });
 
-        writeln!(stdout, "{}", response_json).ok();
-        stdout.flush().ok();
+            writeln!(stdout, "{}", response_json).ok();
+            stdout.flush().ok();
+        }
     }
 }
 
 /// 处理 MCP 请求
-async fn handle_request(request: &JsonRpcRequest, state: &ServerState) -> JsonRpcResponse {
+/// 返回 None 表示这是 notification（不需要响应）
+async fn handle_request(request: &JsonRpcRequest, state: &ServerState) -> Option<JsonRpcResponse> {
     let id = request.id.clone();
 
-    match request.method.as_str() {
+    // notification 没有 id，不需要响应
+    if request.id.is_none() {
+        info!("收到 Notification: {}", request.method);
+        match request.method.as_str() {
+            "initialized" => {
+                info!("MCP 会话初始化完成");
+            }
+            _ => {
+                info!("忽略 notification: {}", request.method);
+            }
+        }
+        return None;
+    }
+
+    Some(match request.method.as_str() {
         // === 初始化 ===
         "initialize" => {
             info!("收到初始化请求");
@@ -130,12 +148,6 @@ async fn handle_request(request: &JsonRpcRequest, state: &ServerState) -> JsonRp
                 }
             });
             JsonRpcResponse::success(id, result)
-        }
-
-        "initialized" => {
-            // 客户端初始化完成通知，不需要响应
-            info!("MCP 会话初始化完成");
-            JsonRpcResponse::success(id, serde_json::json!({}))
         }
 
         // === 工具相关 ===
@@ -188,7 +200,7 @@ async fn handle_request(request: &JsonRpcRequest, state: &ServerState) -> JsonRp
             warn!("未知方法: {}", request.method);
             JsonRpcResponse::error(id, -32601, &format!("Method not found: {}", request.method))
         }
-    }
+    })
 }
 
 /// 处理工具调用
@@ -321,19 +333,250 @@ async fn handle_tool_call(input: &CallToolInput, state: &ServerState) -> CallToo
             }
         }
 
-        // === 通过 MCP 转发到 OpenClaw 执行的文件/Bash 工具 ===
-        // 这些工具由 OpenClaw 通过 MCP 注册，cc_code 只是转达
+        // === 本地工具执行 ===
+        "read_file" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() {
+                return CallToolResult {
+                    content: vec![ContentBlock::Text { text: "缺少 path 参数".to_string() }],
+                    is_error: Some(true),
+                };
+            };
+            match fs::read_to_string(path).await {
+                Ok(content) => CallToolResult {
+                    content: vec![ContentBlock::Text { text: content }],
+                    is_error: Some(false),
+                },
+                Err(e) => CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: format!("读取文件失败: {}", e),
+                    }],
+                    is_error: Some(true),
+                },
+            }
+        }
+
+        "write_file" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() {
+                return CallToolResult {
+                    content: vec![ContentBlock::Text { text: "缺少 path 参数".to_string() }],
+                    is_error: Some(true),
+                };
+            };
+            // 验证路径安全性
+            if state.bash_guard.contains_path_traversal(path) {
+                return CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: "拒绝: 检测到路径遍历攻击".to_string(),
+                    }],
+                    is_error: Some(true),
+                };
+            }
+            match fs::write(path, content).await {
+                Ok(()) => CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: format!("文件已写入: {}", path),
+                    }],
+                    is_error: Some(false),
+                },
+                Err(e) => CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: format!("写入文件失败: {}", e),
+                    }],
+                    is_error: Some(true),
+                },
+            }
+        }
+
+        "edit_file" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let old_text = args.get("old_text").and_then(|v| v.as_str()).unwrap_or("");
+            let new_text = args.get("new_text").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() || old_text.is_empty() {
+                return CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: "缺少 path 或 old_text 参数".to_string(),
+                    }],
+                    is_error: Some(true),
+                };
+            };
+            // 读取当前内容
+            let current = match fs::read_to_string(path).await {
+                Ok(c) => c,
+                Err(e) => {
+                    return CallToolResult {
+                        content: vec![ContentBlock::Text {
+                            text: format!("读取文件失败: {}", e),
+                        }],
+                        is_error: Some(true),
+                    };
+                }
+            };
+            if !current.contains(old_text) {
+                return CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: format!("错误: 旧文本在文件中未找到: {}", path),
+                    }],
+                    is_error: Some(true),
+                };
+            }
+            let new_content = current.replace(old_text, new_text);
+            match fs::write(path, &new_content).await {
+                Ok(()) => CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: format!("文件已编辑: {}", path),
+                    }],
+                    is_error: Some(false),
+                },
+                Err(e) => CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: format!("编辑文件失败: {}", e),
+                    }],
+                    is_error: Some(true),
+                },
+            }
+        }
+
+        "bash" => {
+            let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            if command.is_empty() {
+                return CallToolResult {
+                    content: vec![ContentBlock::Text { text: "缺少 command 参数".to_string() }],
+                    is_error: Some(true),
+                };
+            }
+            // 用 BashGuard 做安全检查
+            let safety = state.bash_guard.validate(command);
+            if safety.is_dangerous() {
+                return CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: format!("拒绝执行危险命令: {}", safety.message()),
+                    }],
+                    is_error: Some(true),
+                };
+            }
+            // 执行命令
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .output()
+                .await;
+            match output {
+                Ok(out) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    let mut text = String::new();
+                    if !stdout.is_empty() {
+                        text.push_str(&format!("stdout:\n{}", stdout));
+                    }
+                    if !stderr.is_empty() {
+                        text.push_str(&format!("stderr:\n{}", stderr));
+                    }
+                    if text.is_empty() {
+                        text = "(命令执行完成，无输出)".to_string();
+                    }
+                    CallToolResult {
+                        content: vec![ContentBlock::Text { text }],
+                        is_error: Some(!out.status.success()),
+                    }
+                }
+                Err(e) => CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: format!("执行命令失败: {}", e),
+                    }],
+                    is_error: Some(true),
+                },
+            }
+        }
+
+        "glob" => {
+            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let base_dir = args.get("base_dir").and_then(|v| v.as_str()).unwrap_or(".");
+            if pattern.is_empty() {
+                return CallToolResult {
+                    content: vec![ContentBlock::Text { text: "缺少 pattern 参数".to_string() }],
+                    is_error: Some(true),
+                };
+            }
+            // 使用 find 命令模拟 glob
+            let output = Command::new("find")
+                .arg(base_dir)
+                .arg("-name")
+                .arg(pattern)
+                .arg("-type")
+                .arg("f")
+                .output()
+                .await;
+            match output {
+                Ok(out) => {
+                    let files = String::from_utf8_lossy(&out.stdout);
+                    CallToolResult {
+                        content: vec![ContentBlock::Text {
+                            text: if files.is_empty() {
+                                "(没有找到匹配的文件)".to_string()
+                            } else {
+                                files.to_string()
+                            },
+                        }],
+                        is_error: Some(false),
+                    }
+                }
+                Err(e) => CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: format!("glob 失败: {}", e),
+                    }],
+                    is_error: Some(true),
+                },
+            }
+        }
+
+        "grep" => {
+            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+            if pattern.is_empty() {
+                return CallToolResult {
+                    content: vec![ContentBlock::Text { text: "缺少 pattern 参数".to_string() }],
+                    is_error: Some(true),
+                };
+            }
+            let output = Command::new("grep")
+                .arg("-rn")
+                .arg(pattern)
+                .arg(path)
+                .output()
+                .await;
+            match output {
+                Ok(out) => {
+                    let results = String::from_utf8_lossy(&out.stdout);
+                    CallToolResult {
+                        content: vec![ContentBlock::Text {
+                            text: if results.is_empty() {
+                                "(没有找到匹配)".to_string()
+                            } else {
+                                results.to_string()
+                            },
+                        }],
+                        is_error: Some(false),
+                    }
+                }
+                Err(e) => CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: format!("grep 失败: {}", e),
+                    }],
+                    is_error: Some(true),
+                },
+            }
+        }
+
+        // 未知工具
         _ => {
-            // 对于其他工具，cc_code 不直接执行，而是返回说明
             CallToolResult {
                 content: vec![ContentBlock::Text {
-                    text: format!(
-                        "工具 {} 需要通过 MCP 转发到 OpenClaw 执行。\
-                         cc_code 作为 MCP 客户端，请使用 OpenClaw 注册的工具。",
-                        tool_name
-                    ),
+                    text: format!("未知工具: {}", tool_name),
                 }],
-                is_error: Some(false),
+                is_error: Some(true),
             }
         }
     }

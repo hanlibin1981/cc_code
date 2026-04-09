@@ -148,6 +148,156 @@ impl ToolRegistry {
                 required: vec!["session_id".to_string()],
             },
         });
+
+        // 本地文件/Bash 工具
+        self.register(ToolDef {
+            name: "read_file".into(),
+            description: "读取文件内容".into(),
+            input_schema: ToolInputSchema {
+                properties: {
+                    let mut props = HashMap::new();
+                    props.insert(
+                        "path".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("文件路径".into()),
+                        },
+                    );
+                    props
+                },
+                required: vec!["path".to_string()],
+            },
+        });
+
+        self.register(ToolDef {
+            name: "write_file".into(),
+            description: "写入文件内容".into(),
+            input_schema: ToolInputSchema {
+                properties: {
+                    let mut props = HashMap::new();
+                    props.insert(
+                        "path".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("文件路径".into()),
+                        },
+                    );
+                    props.insert(
+                        "content".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("文件内容".into()),
+                        },
+                    );
+                    props
+                },
+                required: vec!["path".to_string(), "content".to_string()],
+            },
+        });
+
+        self.register(ToolDef {
+            name: "edit_file".into(),
+            description: "编辑文件（替换指定文本）".into(),
+            input_schema: ToolInputSchema {
+                properties: {
+                    let mut props = HashMap::new();
+                    props.insert(
+                        "path".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("文件路径".into()),
+                        },
+                    );
+                    props.insert(
+                        "old_text".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("要替换的旧文本".into()),
+                        },
+                    );
+                    props.insert(
+                        "new_text".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("替换后的新文本".into()),
+                        },
+                    );
+                    props
+                },
+                required: vec!["path".to_string(), "old_text".to_string()],
+            },
+        });
+
+        self.register(ToolDef {
+            name: "bash".into(),
+            description: "执行 Shell 命令".into(),
+            input_schema: ToolInputSchema {
+                properties: {
+                    let mut props = HashMap::new();
+                    props.insert(
+                        "command".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("Shell 命令".into()),
+                        },
+                    );
+                    props
+                },
+                required: vec!["command".to_string()],
+            },
+        });
+
+        self.register(ToolDef {
+            name: "glob".into(),
+            description: "搜索匹配模式的所有文件".into(),
+            input_schema: ToolInputSchema {
+                properties: {
+                    let mut props = HashMap::new();
+                    props.insert(
+                        "pattern".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("文件名匹配模式 (e.g. *.rs)".into()),
+                        },
+                    );
+                    props.insert(
+                        "base_dir".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("搜索基础目录 (default: .)".into()),
+                        },
+                    );
+                    props
+                },
+                required: vec!["pattern".to_string()],
+            },
+        });
+
+        self.register(ToolDef {
+            name: "grep".into(),
+            description: "在文件中搜索文本".into(),
+            input_schema: ToolInputSchema {
+                properties: {
+                    let mut props = HashMap::new();
+                    props.insert(
+                        "pattern".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("搜索模式".into()),
+                        },
+                    );
+                    props.insert(
+                        "path".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("搜索路径 (default: .)".into()),
+                        },
+                    );
+                    props
+                },
+                required: vec!["pattern".to_string()],
+            },
+        });
     }
 
     /// 注册工具
