@@ -1,5 +1,36 @@
 
-## [主题1] Tool.ts 和 tools.ts - 工具基类系统（2026-04-08 续）
+## [主题1] Tool.ts 和 tools.ts - 工具基类系统（2026-04-09 续）
+
+### 补充：工具禁用规则体系（constants/tools.ts）
+
+**禁用规则分层**：
+- `ALL_AGENT_DISALLOWED_TOOLS`：所有子agent禁用（TaskOutput/ExitPlanMode/EnterPlanMode/AgentTool等）
+- `ASYNC_AGENT_ALLOWED_TOOLS`：异步Agent白名单（Read/Search/Write/Edit等）
+- `IN_PROCESS_TEAMMATE_ALLOWED_TOOLS`：进程内队友额外权限（TaskCreate/Get/List/Update/SendMessage）
+- `COORDINATOR_MODE_ALLOWED_TOOLS`：协调模式白名单（Agent/TaskStop/SendMessage/SyntheticOutput）
+
+**工具禁用决策树**：
+1. 子Agent禁用 vs 异步Agent白名单 vs 进程内队友额外权限
+2. 协调模式特殊处理（只暴露管理工具）
+3. Feature flag 控制（WORKFLOW_SCRIPTS/AGENT_TRIGGERS）
+
+### 架构模式总结
+
+| 模式 | 位置 | 作用 |
+|------|------|------|
+| 泛型接口 | Tool<T> | 类型安全的输入输出 |
+| Context注入 | ToolUseContext | 运行时依赖注入 |
+| 工厂构建 | buildTool | 默认值填充+类型桥接 |
+| 条件编译 | feature('FLAG') | Tree-shaking |
+| 分层过滤 | getTools→filterToolsByDenyRules | 权限控制 |
+| 工具合并 | assembleToolPool | 内置+MCP去重 |
+
+### 可借鉴设计补充
+
+- **规则集合**：工具禁用用 Set 而非数组，O(1)查找
+- **环境区分**：process.env.USER_TYPE === 'ant' 区分内部构建
+- **Feature flag 组合**：...展开符实现条件数组拼接
+- **常量集中管理**：工具名称常量（*_TOOL_NAME）避免硬编码
 
 ### 深度分析：buildTool 工厂模式
 
@@ -582,3 +613,244 @@ maxResultSizeChars: number  // 结果超过此大小则持久化到磁盘
 - 丰富的特性方法支持细粒度调度决策
 - Result持久化到磁盘避免大结果撑爆上下文
 - backfillObservableInput 在观察前修改输入（保留API缓存）
+
+---
+
+## [主题14] MCP Transport体系 + MCP工具转换（2026-04-09）
+
+### MCP Transport类型（client.ts + types.ts）
+
+**Transport类型枚举**：stdio | sse | sse-ide | http | ws | sdk
+
+| 类型 | 说明 |
+|------|------|
+| stdio | 子进程，通过stdin/stdout通信 |
+| sse | HTTP+SSE，客户端连接SSE端点接收服务消息 |
+| sse-ide | IDE扩展专用，IDE内运行MCP服务 |
+| http | Streamable HTTP（最新标准） |
+| ws | WebSocket |
+| sdk | In-Process，通过SDK直接调用 |
+
+**WebSocketTransport封装**：同时支持Bun原生WebSocket和ws库，通过`isBun`标志选择事件API。`queueMicrotask`异步投递消息避免同步递归。
+
+**InProcessTransport**：无进程开销，通过`queueMicrotask`直接投递消息，peer-to-peer双向链表。
+
+### MCP工具转换（fetchToolsForClient）
+
+```typescript
+// 构建完全限定名：serverName + toolName
+const fullyQualifiedName = buildMcpToolName(client.name, tool.name)
+
+// MCP annotations → Claude Code特性方法
+tool.annotations?.readOnlyHint     → isConcurrencySafe() + isReadOnly()
+tool.annotations?.destructiveHint   → isDestructive()
+tool.annotations?.openWorldHint     → isOpenWorld()
+
+// _meta特殊字段
+tool._meta['anthropic/alwaysLoad']  → alwaysLoad: true
+tool._meta['anthropic/searchHint']   → searchHint（去空白后）
+```
+
+**关键**：MCPTool是模板，fetchToolsForClient为每个MCP工具返回定制实例（name/description/prompt/call实现不同）。
+
+### 权限suggestions
+
+MCP工具checkPermissions返回passthrough+suggestions，引导用户添加allow规则：
+```typescript
+suggestions: [{ type: 'addRules', rules: [{ toolName: fullyQualifiedName }], behavior: 'allow' }]
+```
+
+---
+
+## [主题15] 权限规则引擎（permissions.ts 2026-04-09）
+
+### 多层检查管道（checkRuleBasedPermissions → hasPermissionsToUseToolInner → hasPermissionsToUseTool）
+
+**Step 1a-1g 检查顺序**：
+1. **1a 工具级deny规则**：getDenyRuleForTool → deny
+2. **1b 工具级ask规则**：getAskRuleForTool → ask（可被sandbox bypass）
+3. **1c 工具特定检查**：tool.checkPermissions()（Bash子命令规则等）
+4. **1d 工具实现拒绝**：tool返回deny
+5. **1f 内容级ask规则**：tool.checkPermissions返回{type:'rule', ruleBehavior:'ask'}
+6. **1g Safety检查**：.git/.claude/.vscode等安全路径 → ask（不可bypass）
+
+### 模式转换（外层包装）
+
+**dontAsk模式**：外层把ask转deny
+**auto模式**：用AI classifier替代用户prompt（TRANSCRIPT_CLASSIFIER特性）
+**plan+auto模式**：plan模式下auto classifier激活
+
+### SafetyCheck不可bypass
+
+```typescript
+// 即使PreToolUse hook返回allow，safetyCheck仍需prompt
+// 这是核心原则：安全路径不能被hook绕过
+decisionReason.type === 'safetyCheck' && !classifierApprovable → ask
+```
+
+---
+
+## [主题16] AgentTool + runAgent（2026-04-09）
+
+### AgentTool.call流程
+
+```
+AgentTool.call(input)
+  → registerAsyncAgent()       // 创建LocalAgentTaskState，注册到AppState
+  → runAgent()                 // 真正执行：query loop
+    → initializeAgentMcpServers()  // 加载agent frontmatter定义的MCP服务器
+    → cloneFileStateCache()        // 克隆父context的文件状态
+    → createSubagentContext()       // 创建子上下文（abort链接、AppState隔离）
+    → registerFrontmatterHooks()   // 加载frontmatter hooks
+    → query()                      // 启动query loop
+  → onCacheSafeParams(fork)    // fork模式：共享父prompt缓存
+  → registerAgentForeground()  // 前景任务：可被background
+  → emitTaskProgress()         // 进度报告
+```
+
+### Agent MCP服务器初始化
+
+agent frontmatter可定义自己的MCP服务器（`mcpServers[]`），与父context的MCP clients合并。inline定义的服务器在agent结束时cleanup，string引用（按名称）的服务器共享父的memoized连接。
+
+### 工作树隔离（isolation: worktree）
+
+```typescript
+isolation: 'worktree'
+  → createAgentWorktree()   // git worktree add --detach <temp-dir>
+  → 父工具池 + agent工具
+  → 子context的cwd指向工作树目录
+  → 结束时 removeAgentWorktree()
+```
+
+---
+
+## [主题17] Task框架 + LocalShellTask（2026-04-09）
+
+### Task接口（Task.ts）
+
+```typescript
+type Task = {
+  name: string
+  type: TaskType   // local_bash | local_agent | remote_agent | in_process_teammate | ...
+  kill(taskId: string, setAppState: SetAppState): Promise<void>
+}
+```
+
+**关键**：Task是命令模式，所有任务实现kill方法。注册后通过AppState.tasks管理。
+
+### TaskStateBase
+
+```typescript
+type TaskStateBase = {
+  id, type, status, description, toolUseId
+  startTime, endTime, totalPausedMs
+  outputFile, outputOffset, notified
+}
+```
+
+所有任务状态都包含这些字段。outputFile指向磁盘文件（TaskOutput系统）。
+
+### TaskOutput系统
+
+```typescript
+// TaskOutput封装磁盘输出管理
+new TaskOutput(taskId)  // 文件路径 + 原子写入
+.write(chunk)           // 追加到文件
+.getDelta(offset)       // 获取增量
+.evict()               // 完成后删除
+```
+
+设计原则：大量输出写到磁盘而不是内存，保护AppState。
+
+### LocalShellTask生命周期
+
+```
+spawnShellTask()
+  → registerTask(taskState, setAppState)  // 注册到AppState
+  → shellCommand.background(taskId)        // 后台执行
+  → startStallWatchdog()                   // 检测卡住（等待键盘输入）
+  → shellCommand.result.then()             // 完成时清理+通知
+```
+
+**Stall检测**：5秒轮询文件大小，若30秒无增长且最后一行像交互提示符（y/n等），发通知提醒用户可能卡住了。
+
+### 任务ID编码
+
+前缀+随机8字节base36：
+- `b` = local_bash, `a` = local_agent, `r` = remote_agent, `t` = in_process_teammate
+- 36^8 ≈ 2.8万亿，防暴力symlink攻击
+
+---
+
+## [主题1-2] Tool.ts 和 tools.ts - 补充学习（2026-04-08 18:10）
+
+### 新发现：ToolResult 类型设计
+
+**ToolResult 结构（Tool.ts:280-295）**
+```typescript
+type ToolResult<T> = {
+  data: T
+  newMessages?: (UserMessage | AssistantMessage | AttachmentMessage | SystemMessage)[]
+  contextModifier?: (context: ToolUseContext) => ToolUseContext
+  mcpMeta?: { _meta?: Record; structuredContent?: Record }
+}
+```
+- 支持返回新消息（追加到会话）
+- 支持修改上下文（动态更新权限/配置）
+- 支持MCP协议元数据透传
+
+**ToolCallProgress 类型**
+```typescript
+type ToolCallProgress<P> = (progress: ToolProgress<P>) => void
+type ToolProgress<P> = { toolUseID: string; data: P }
+```
+- 流式进度回调机制
+- 泛型支持不同进度数据类型
+
+### 新发现：tools.ts 工具池策略
+
+**1. 条件编译（feature flags）**
+```typescript
+const cronTools = feature('AGENT_TRIGGERS') ? [CronCreateTool, ...] : []
+const REPLTool = process.env.USER_TYPE === 'ant' ? require(...) : null
+```
+- 使用 bun:bundle 的 feature() 进行tree-shaking
+- process.env 控制开发/生产行为
+
+**2. 工具池组装层次**
+- getAllBaseTools() → 所有可能工具（feature flag 过滤）
+- getTools(permissionContext) → 权限过滤 + 模式过滤
+- assembleToolPool() → 内置 + MCP 合并 + 去重
+
+**3. 简单模式（CLAUDE_CODE_SIMPLE）**
+- 只暴露 Bash/Read/Edit 三个原子工具
+- 与 REPL 模式互斥：简单模式不启用 REPL
+
+### 架构思想
+
+- **依赖注入**：ToolUseContext 作为单一注入点，包含所有运行时依赖
+- **接口组合**：Tool 是数据+行为+渲染的组合体，不是单纯函数
+- **工厂模式**：buildTool 统一构建流程，填充默认值
+- **分层过滤**：权限→模式→特性→运行时状态，层层递减
+- **延迟加载**：shouldDefer 实现按需加载，减少 turn 1 token
+
+## Promoted From Short-Term Memory (2026-04-09)
+
+<!-- openclaw-memory-promotion:memory:memory/2026-03-21.md:1:23 -->
+- # 2026-03-21 工作日志 ## 股票监控 Cron Job - 时间: 06:07 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周末 06:07) - 状态: ✅ 正常 ## 股票监控 Cron Job - 时间: 07:11 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周末 07:11) - 状态: ✅ 正常 ## 股票监控 Cron Job - 时间: 14:02 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周末 14:02) - 状态: ✅ 正常 ## 待办 - [score=0.844 recalls=7 avg=0.733 source=memory/2026-03-21.md:1-23]
+<!-- openclaw-memory-promotion:memory:memory/2026-03-23.md:1:13 -->
+- # 2026-03-23 工作日志 ## 股票监控 Cron Job - 时间: 21:00 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周一晚9:00) - 状态: ✅ 正常 - 时间: 01:35 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周一凌晨 01:35) - 状态: ✅ 正常 [score=0.838 recalls=7 avg=0.712 source=memory/2026-03-23.md:1-13]
+<!-- openclaw-memory-promotion:memory:memory/2026-04-06.md:1:7 -->
+- ## 股票监控 Cron Job - 时间: 00:21 - 任务: stock-signal-monitor - 结果: 非交易时间，跳过（周一凌晨00:21） - 状态: ✅ 正常 [score=0.814 recalls=5 avg=0.730 source=memory/2026-04-06.md:1-7]
+
+## Promoted From Short-Term Memory (2026-04-09)
+
+<!-- openclaw-memory-promotion:memory:memory/2026-03-22.md:1:18 -->
+- # 2026-03-22 工作日志 ## 股票监控 Cron Job - 时间: 14:41 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周末 14:41) - 状态: ✅ 正常 - 时间: 12:23 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周末 12:23) - 状态: ✅ 正常 - 时间: 00:16 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周日午夜 00:16) - 状态: ✅ 正常 [score=0.807 recalls=5 avg=0.707 source=memory/2026-03-22.md:1-18]
+
+## Promoted From Short-Term Memory (2026-04-09)
+
+<!-- openclaw-memory-promotion:memory:memory/2026-04-04.md:1:9 -->
+- # 2026-04-04 工作日志 ## 股票监控 Cron Job - 时间: 04:15 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周六凌晨 04:15) - 状态: ✅ 正常 [score=0.802 recalls=4 avg=0.735 source=memory/2026-04-04.md:1-9]
+<!-- openclaw-memory-promotion:memory:memory/2026-03-20.md:1:13 -->
+- # 2026-03-20 工作日志 ## 今日事项 ### 股票监控 Cron Job - 时间: 18:30 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (18:30 > A股收盘时间15:00) - 状态: ✅ 正常 ## 待办 - [score=0.801 recalls=4 avg=0.732 source=memory/2026-03-20.md:1-13]
