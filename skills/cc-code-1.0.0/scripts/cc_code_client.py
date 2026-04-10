@@ -213,30 +213,53 @@ class CcCodeClient:
         
         self._send(req)
         
-        deadline = time.time() + 15
-        buf = ""
+        deadline = time.time() + 300  # 5min for complex tasks
+        buf = b""
+        last_read_time = time.time()
+        
         while time.time() < deadline:
             self._drain_stderr(timeout=0.05)
-            ready, _, _ = select.select([self.process.stdout], [], [], 0.3)
-            if ready:
+            # Always try to read if we haven't read in a while (avoid starvation)
+            if time.time() - last_read_time > 0.5:
                 try:
-                    chunk = os.read(self.process.stdout.fileno(), 65536).decode('utf-8')
+                    chunk = os.read(self.process.stdout.fileno(), 16384)
                     if chunk:
                         buf += chunk
-                        for l in buf.split('\n'):
-                            l = l.strip()
-                            if l and l.startswith('{'):
-                                try:
-                                    return json.loads(l)
-                                except json.JSONDecodeError:
-                                    pass
-                        for m in re.finditer(r'\{[^}]+\}', buf):
-                            try:
-                                return json.loads(m.group())
-                            except json.JSONDecodeError:
-                                pass
+                        last_read_time = time.time()
+                    elif buf:
+                        # EOF on stdout but still have buffered data
+                        pass
+                    else:
+                        # No data and no buffer, wait a bit
+                        time.sleep(0.05)
+                        continue
                 except OSError:
+                    time.sleep(0.05)
+                    continue
+            
+            # Try to parse from buffer
+            text = buf.decode('utf-8', errors='replace')
+            text_stripped = text.lstrip()
+            if text_stripped.startswith('{'):
+                try:
+                    return json.loads(text_stripped)
+                except json.JSONDecodeError:
                     pass
+            
+            # Try line-by-line
+            for line in text.split('\n'):
+                line = line.strip()
+                if line.startswith('{'):
+                    try:
+                        return json.loads(line)
+                    except json.JSONDecodeError:
+                        pass
+            
+            # If buffer is growing but incomplete, keep reading
+            if len(buf) < 1024 * 1024:  # 1MB max
+                time.sleep(0.05)
+                continue
+            break
         return None
     
     def create_session(self) -> str:
@@ -310,7 +333,20 @@ class CcCodeClient:
             self.create_session()
             tool_results = None
             for i in range(MAX_ITERATIONS):
-                response = self.send_message(task, tool_results)
+                # API 调用失败重试（指数退避，最多 3 次）
+                for retry in range(3):
+                    response = self.send_message(task, tool_results)
+                    # 检测 API 错误
+                    if "处理消息失败" in response or "API error" in response or "Model API error" in response:
+                        wait = (retry + 1) * 3
+                        print(f"⚠️ API 错误，重试 ({retry+1}/3)，等待 {wait}s: {response[:80]}", file=sys.stderr)
+                        time.sleep(wait)
+                        continue
+                    break
+                else:
+                    # 3 次重试都失败
+                    return response
+
                 tool_calls = self.parse_tool_calls(response)
                 if not tool_calls:
                     return response
