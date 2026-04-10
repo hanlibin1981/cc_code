@@ -3,7 +3,6 @@
 
 mod agent;
 mod mcp;
-mod model;
 mod security;
 mod session;
 mod tools;
@@ -232,7 +231,7 @@ async fn handle_tool_call(input: &CallToolInput, state: &ServerState) -> CallToo
 
         "cc_list_sessions" => {
             let sessions = {
-                let manager = state.session_manager.read().await;
+                let mut manager = state.session_manager.write().await;
                 manager.list_sessions()
             };
 

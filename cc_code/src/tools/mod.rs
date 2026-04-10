@@ -1,6 +1,7 @@
 //! 工具模块
 //! 工具注册表和调用抽象
 
+pub mod streaming;
 mod mcp_tools;
 
 use serde::{Deserialize, Serialize};

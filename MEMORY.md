@@ -1,3 +1,207 @@
+## [主题1] Tool.ts 和 tools.ts - 工具基类系统（2026-04-10）
+
+### 核心架构总结
+
+**1. Tool 接口三层设计**
+- **类型层**：泛型 `Tool<Input, Output, P>` 实现输入/输出/进度的强类型约束
+- **契约层**：`call()` 执行、`description()` 描述、`inputSchema` 验证（Zod schema）
+- **特性层**：`isConcurrencySafe`/`isReadOnly`/`isDestructive`/`isSearchOrReadCommand` 等方法
+
+**2. ToolUseContext 超大上下文容器**
+- 50+ 属性：options 配置层 + state 状态层 + permission 权限层 + callback 通信层 + lifecycle 生命周期层
+- 依赖注入模式：所有依赖通过参数透传，无全局状态
+- 子进程支持：`agentId`/`localDenialTracking`/`contentReplacementState`
+
+**3. ToolResult 多态设计**
+- `data: T` 标准输出
+- `newMessages` 消息注入（UserMessage/AssistantMessage/SystemMessage）
+- `contextModifier` 函数式上下文修改
+- `mcpMeta` MCP 协议元数据透传
+
+**4. buildTool 工厂模式**
+- TOOL_DEFAULTS _fail-closed 策略_：isConcurrencySafe=false, isReadOnly=false, isDestructive=false
+- BuiltTool<D> 类型桥接：Omit+Partial 实现默认值填充
+- 6 个可缺省方法统一填充
+
+**5. tools.ts 工具池组装**
+- getAllBaseTools：feature('FLAG') 条件编译（bun:bundle tree-shaking）
+- getTools：filterToolsByDenyRules 权限过滤 + REPL 模式过滤
+- assembleToolPool：内置 + MCP 去重合并（uniqBy, 内置优先）
+
+### 可借鉴设计
+
+- **Zod schema 驱动验证**：inputSchema 即 Zod，运行时+类型安全
+- **Context 注入**：50+ 属性超大容器，依赖全透传
+- **fail-closed 原则**：危险操作默认拒绝（isDestructive=false）
+- **条件编译**：`feature()` + process.env 双通道
+- **渲染分离**：Tool 负责数据+渲染，View 负责展示
+- **丰富元数据**：searchHint/maxResultSize/aliases/toAutoClassifierInput
+
+---
+
+## [主题1] Tool.ts 和 tools.ts - 工具基类系统（2026-04-09 续-2）
+
+### 新发现：Tool 验证与回填机制
+
+**1. backfillObservableInput（Tool.ts:480）**
+```typescript
+backfillObservableInput?(input: Record<string, unknown>): void
+```
+- 在 observers（SDK stream/transcript/canUseTool/hooks）看到输入前调用
+- 原地修改添加 legacy/derived 字段
+- 必须是幂等的，不修改原始 API-bound 输入（保留 prompt cache）
+
+**2. validateInput（Tool.ts:490）**
+```typescript
+validateInput?(input, context): Promise<ValidationResult>
+```
+- 在 checkPermissions 前先做输入验证
+- 返回 `{ result: true }` 或 `{ result: false, message, errorCode }`
+- 工具级验证（不同于权限检查）
+
+### 新发现：ToolUseContext 记忆相关属性
+
+```typescript
+nestedMemoryAttachmentTriggers?: Set<string>  // 触发嵌套记忆附件的条件
+loadedNestedMemoryPaths?: Set<string>          // 已注入的CLAUDE.md路径（去重）
+dynamicSkillDirTriggers?: Set<string>         // 动态skill目录触发
+discoveredSkillNames?: Set<string>             // skill_discovery发现的技能（遥测）
+criticalSystemReminder_EXPERIMENTAL?: string   // 实验性系统提醒
+preserveToolUseResults?: boolean               // 保留子agent的tool结果用于查看
+```
+
+### 新发现：tools.ts 工具预设系统
+
+```typescript
+export const TOOL_PRESETS = ['default'] as const
+export type ToolPreset = (typeof TOOL_PRESETS)[number]
+
+function getToolsForDefaultPreset(): string[] {
+  const tools = getAllBaseTools()
+  const isEnabled = tools.map(tool => tool.isEnabled())
+  return tools.filter((_, i) => isEnabled[i]).map(tool => tool.name)
+}
+```
+- 预留的 preset 扩展点，未来可添加 "minimal"、"coding" 等预设
+- 通过 isEnabled() 过滤禁用工具
+
+### 可借鉴设计补充
+
+- **幂等回填**：backfillObservableInput 设计保证不破坏 prompt cache
+- **验证前置**：validateInput 在权限检查前执行，减少无效权限查询
+- **记忆去重**：loadedNestedMemoryPaths 用 Set 去重，避免重复注入
+- **预设扩展点**：TOOL_PRESETS 预留多preset支持
+
+---
+
+## [主题1] Tool.ts 和 tools.ts - 工具基类系统（2026-04-09 续-3）
+
+### 新发现：验证与回填机制
+
+**1. backfillObservableInput（Tool.ts:480）**
+```typescript
+backfillObservableInput?(input: Record<string, unknown>): void
+```
+- 在 observers（SDK stream/transcript/canUseTool/hooks）看到输入前调用
+- 原地修改添加 legacy/derived 字段，必须幂等
+- 不修改原始 API-bound 输入（保留 prompt cache）
+
+**2. validateInput（Tool.ts:490）**
+```typescript
+validateInput?(input, context): Promise<ValidationResult>
+```
+- 在 checkPermissions 前先做输入验证
+- 返回 `{ result: true }` 或 `{ result: false, message, errorCode }`
+
+### 新发现：ToolUseContext 记忆属性
+
+```typescript
+nestedMemoryAttachmentTriggers?: Set<string>  // 触发嵌套记忆附件
+loadedNestedMemoryPaths?: Set<string>         // 已注入的CLAUDE.md去重
+dynamicSkillDirTriggers?: Set<string>        // 动态skill目录触发
+discoveredSkillNames?: Set<string>          // skill_discovery发现（遥测）
+criticalSystemReminder_EXPERIMENTAL?: string
+preserveToolUseResults?: boolean            // 保留子agent tool结果
+```
+
+### 新发现：tools.ts preset 系统
+
+```typescript
+export const TOOL_PRESETS = ['default'] as const
+export type ToolPreset = (typeof TOOL_PRESETS)[number]
+
+function getToolsForDefaultPreset(): string[] {
+  const tools = getAllBaseTools()
+  const isEnabled = tools.map(tool => tool.isEnabled())
+  return tools.filter((_, i) => isEnabled[i]).map(tool => tool.name)
+}
+```
+- 预留 preset 扩展点，未来可添加 "minimal"、"coding" 等
+- 通过 isEnabled() 过滤禁用工具
+
+### 可借鉴设计
+
+- **幂等回填**：backfillObservableInput 设计保证不破坏 prompt cache
+- **验证前置**：validateInput 在权限检查前执行，减少无效权限查询
+- **记忆去重**：loadedNestedMemoryPaths 用 Set 去重
+- **预设扩展点**：TOOL_PRESETS 预留多 preset 支持
+
+---
+
+## [主题1] Tool.ts 和 tools.ts - 工具基类系统（2026-04-09 续-2）
+
+### 新发现：Tool 验证与回填机制
+
+**1. backfillObservableInput（Tool.ts:480）**
+```typescript
+backfillObservableInput?(input: Record<string, unknown>): void
+```
+- 在 observers（SDK stream/transcript/canUseTool/hooks）看到输入前调用
+- 原地修改添加 legacy/derived 字段
+- 必须是幂等的，不修改原始 API-bound 输入（保留 prompt cache）
+
+**2. validateInput（Tool.ts:490）**
+```typescript
+validateInput?(input, context): Promise<ValidationResult>
+```
+- 在 checkPermissions 前先做输入验证
+- 返回 `{ result: true }` 或 `{ result: false, message, errorCode }`
+- 工具级验证（不同于权限检查）
+
+### 新发现：ToolUseContext 记忆相关属性
+
+```typescript
+nestedMemoryAttachmentTriggers?: Set<string>  // 触发嵌套记忆附件的条件
+loadedNestedMemoryPaths?: Set<string>          // 已注入的CLAUDE.md路径（去重）
+dynamicSkillDirTriggers?: Set<string>         // 动态skill目录触发
+discoveredSkillNames?: Set<string>             // skill_discovery发现的技能（遥测）
+criticalSystemReminder_EXPERIMENTAL?: string   // 实验性系统提醒
+preserveToolUseResults?: boolean               // 保留子agent的tool结果用于查看
+```
+
+### 新发现：tools.ts 工具预设系统
+
+```typescript
+export const TOOL_PRESETS = ['default'] as const
+export type ToolPreset = (typeof TOOL_PRESETS)[number]
+
+function getToolsForDefaultPreset(): string[] {
+  const tools = getAllBaseTools()
+  const isEnabled = tools.map(tool => tool.isEnabled())
+  return tools.filter((_, i) => isEnabled[i]).map(tool => tool.name)
+}
+```
+- 预留的 preset 扩展点，未来可添加 "minimal"、"coding" 等预设
+- 通过 isEnabled() 过滤禁用工具
+
+### 可借鉴设计补充
+
+- **幂等回填**：backfillObservableInput 设计保证不破坏 prompt cache
+- **验证前置**：validateInput 在权限检查前执行，减少无效权限查询
+- **记忆去重**：loadedNestedMemoryPaths 用 Set 去重，避免重复注入
+- **预设扩展点**：TOOL_PRESETS 预留多preset支持
+
+---
 
 ## [主题1] Tool.ts 和 tools.ts - 工具基类系统（2026-04-09 续）
 
@@ -28,6 +232,17 @@
 ### 可借鉴设计补充
 
 - **规则集合**：工具禁用用 Set 而非数组，O(1)查找
+
+---
+
+## [主题1.2024-04-09] Tool.ts 核心机制 - 工具基类系统
+
+- **ToolDef→BuiltTool 类型桥接**：Omit+Partial双层擦除，`buildTool` runtime 合并，`as BuiltTool<D>` 类型桥接，实现接口缺省方法默认值填充
+- **ToolUseContext 依赖注入**：超过50个属性的超大Context对象，包含commands/tools/debug/hook/mcp等，通过函数参数透传而非全局状态
+- **ToolResult 多态设计**：`data`+`newMessages`+`contextModifier`+`mcpMeta`，支持追加消息/上下文修改/MCP元数据穿透
+- **buildTool 默认值**：fail-closed原则（isConcurrencySafe=false,isReadOnly=false），安全相关必须显式覆盖
+- **工具禁用分层**：ALL_AGENT_DISALLOWED_TOOLS(子Agent完全禁用) vs ASYNC_AGENT_ALLOWED_TOOLS(白名单) vs IN_PROCESS_TEAMMATE_ALLOWED(进程内队友额外权限)
+- **条件编译**：`feature('FLAG')`+process.env双通道，配合rollup tree-shaking实现条件导出
 - **环境区分**：process.env.USER_TYPE === 'ant' 区分内部构建
 - **Feature flag 组合**：...展开符实现条件数组拼接
 - **常量集中管理**：工具名称常量（*_TOOL_NAME）避免硬编码

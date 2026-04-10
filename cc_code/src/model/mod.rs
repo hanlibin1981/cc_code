@@ -1,6 +1,8 @@
 //! 模型接口抽象
 //! 支持多种模型提供商
 
+pub mod retry;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 

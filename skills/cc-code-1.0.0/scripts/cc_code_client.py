@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-cc_code Client - 使用非阻塞 I/O
+cc_code Client - OpenClaw Skill
+调用 cc_code MCP 服务器进行编程推理，工具执行由本脚本完成。
 """
 
 import subprocess
@@ -15,7 +16,7 @@ import select
 from typing import Optional
 
 CC_CODE_BIN = os.path.expanduser("~/.openclaw/workspace/cc_code/target/debug/cc_code")
-MAX_ITERATIONS = 10
+MAX_ITERATIONS = 20
 
 
 class ToolExecutor:
@@ -156,14 +157,14 @@ class CcCodeClient:
         
         env = os.environ.copy()
         api_key = env.get("MINIMAX_API_KEY", "")
-        _ = api_key  # 已在 env 中
+        _ = api_key
         
         self.process = subprocess.Popen(
             [CC_CODE_BIN],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            bufsize=0  # 无缓冲
+            bufsize=0
         )
         
         # 设置 stderr 为非阻塞
@@ -172,14 +173,13 @@ class CcCodeClient:
         
         self._drain_stderr(timeout=1.0)
         
-        # 初始化
         resp = self._call("initialize", {
             "protocol_version": {"major": 1, "minor": 0},
             "capabilities": {},
             "client_info": {"name": "cc-client", "version": "1.0"}
         })
         if not resp:
-            raise RuntimeError(f"初始化失败")
+            raise RuntimeError("初始化失败")
         
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         self._drain_stderr()
@@ -213,7 +213,6 @@ class CcCodeClient:
         
         self._send(req)
         
-        # 读取响应
         deadline = time.time() + 15
         buf = ""
         while time.time() < deadline:
@@ -224,7 +223,6 @@ class CcCodeClient:
                     chunk = os.read(self.process.stdout.fileno(), 65536).decode('utf-8')
                     if chunk:
                         buf += chunk
-                        # 尝试解析
                         for l in buf.split('\n'):
                             l = l.strip()
                             if l and l.startswith('{'):
@@ -232,8 +230,6 @@ class CcCodeClient:
                                     return json.loads(l)
                                 except json.JSONDecodeError:
                                     pass
-                        # 如果没有完整的 JSON 行，尝试从 buf 中提取
-                        import re
                         for m in re.finditer(r'\{[^}]+\}', buf):
                             try:
                                 return json.loads(m.group())
@@ -275,12 +271,37 @@ class CcCodeClient:
                 self.process.kill()
     
     def parse_tool_calls(self, text: str) -> list:
+        """解析 [TOOL_CALL:{...}] 格式，支持跨行和嵌套 JSON 对象"""
         tool_calls = []
-        for match in re.finditer(r'\[TOOL_CALL:\s*(\{[^]]+\})\]', text):
-            try:
-                tool_calls.append(json.loads(match.group(1)))
-            except json.JSONDecodeError:
-                pass
+        start_tag = '[TOOL_CALL:'
+        idx = 0
+        while True:
+            start = text.find(start_tag, idx)
+            if start == -1:
+                break
+            brace_start = text.find('{', start + len(start_tag))
+            if brace_start == -1:
+                break
+            # 平衡括号，找匹配的 }
+            depth = 0
+            i = brace_start
+            while i < len(text):
+                c = text[i]
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        json_str = text[brace_start:i+1]
+                        try:
+                            tc = json.loads(json_str)
+                            if isinstance(tc, dict) and "name" in tc:
+                                tool_calls.append(tc)
+                        except json.JSONDecodeError:
+                            pass
+                        break
+                i += 1
+            idx = brace_start + 1
         return tool_calls
     
     def run(self, task: str) -> str:

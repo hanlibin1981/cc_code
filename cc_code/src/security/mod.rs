@@ -1,7 +1,8 @@
 //! 安全模块
 //! Bash 命令安全验证
 
-mod bash_guard;
+pub mod bash_security;
+pub mod path_validation;
 
 /// 权限模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

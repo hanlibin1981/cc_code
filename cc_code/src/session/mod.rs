@@ -2,13 +2,15 @@
 //! 管理编程会话的生命周期和状态
 
 pub mod memory;
+pub mod compact;
 
-
-
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
+
+/// Session 空闲超时时间（秒）
+const SESSION_TIMEOUT_SECS: i64 = 3600;
 
 /// 会话状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +37,7 @@ pub struct Session {
     pub cwd: std::path::PathBuf,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub last_accessed: DateTime<Utc>, // 用于超时清理
     pub state: SessionState,
     pub messages: Vec<SessionMessage>,
     pub tools: Vec<String>,                        // 可用工具列表
@@ -50,7 +53,7 @@ pub struct SessionMessage {
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageRole {
     User,
@@ -89,12 +92,19 @@ impl Session {
             cwd,
             created_at: now,
             updated_at: now,
+            last_accessed: now,
             state: SessionState::Idle,
             messages: Vec::new(),
             tools: Vec::new(),
             tool_results: HashMap::new(),
             simple_tool_results: Vec::new(),
         }
+    }
+
+    /// 更新最后访问时间
+    pub fn touch(&mut self) {
+        self.last_accessed = Utc::now();
+        self.updated_at = self.last_accessed;
     }
 
     pub fn add_message(&mut self, role: MessageRole, content: String) {
@@ -179,8 +189,20 @@ impl SessionManager {
         }
     }
 
+    /// 清理超时会话（超过 SESSION_TIMEOUT_SECS 未访问的会话）
+    pub fn cleanup_expired(&mut self) -> usize {
+        let now = Utc::now();
+        let timeout = Duration::seconds(SESSION_TIMEOUT_SECS);
+        let before = self.sessions.len();
+        self.sessions.retain(|_, session| {
+            now.signed_duration_since(session.last_accessed) < timeout
+        });
+        before - self.sessions.len()
+    }
+
     pub fn create_session(&mut self, cwd: std::path::PathBuf) -> Session {
-        let session = Session::new(cwd);
+        let mut session = Session::new(cwd);
+        session.touch();
         let id = session.id;
         self.sessions.insert(id, session.clone());
         session
@@ -191,14 +213,20 @@ impl SessionManager {
     }
 
     pub fn get_session_mut(&mut self, id: &Uuid) -> Option<&mut Session> {
-        self.sessions.get_mut(id)
+        // 先清理过期会话
+        self.cleanup_expired();
+        let session = self.sessions.get_mut(id)?;
+        session.touch();
+        Some(session)
     }
 
     pub fn remove_session(&mut self, id: &Uuid) -> Option<Session> {
         self.sessions.remove(id)
     }
 
-    pub fn list_sessions(&self) -> Vec<SessionSummary> {
+    pub fn list_sessions(&mut self) -> Vec<SessionSummary> {
+        // 列出前先清理过期会话
+        self.cleanup_expired();
         self.sessions
             .values()
             .map(|s| SessionSummary {
