@@ -701,7 +701,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_coordinator_initialization() {
-        let coordinator = Coordinator::new();
+        let mut coordinator = Coordinator::new();
         coordinator.initialize().await.unwrap();
 
         let phase = coordinator.get_phase().await;
@@ -710,7 +710,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_research_phase() {
-        let coordinator = Coordinator::new();
+        let mut coordinator = Coordinator::new();
         coordinator.initialize().await.unwrap();
 
         let worker_ids = coordinator.start_research("Research this topic").await.unwrap();
@@ -733,7 +733,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_synthesis_phase() {
-        let coordinator = Coordinator::new();
+        let mut coordinator = Coordinator::new();
         coordinator.initialize().await.unwrap();
 
         coordinator.start_research("Research").await.unwrap();
@@ -757,7 +757,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_implementation_phase() {
-        let coordinator = Coordinator::new();
+        let mut coordinator = Coordinator::new();
         coordinator.initialize().await.unwrap();
 
         coordinator.start_research("Research").await.unwrap();
@@ -783,7 +783,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_full_flow() {
-        let coordinator = Coordinator::new();
+        let mut coordinator = Coordinator::new();
         coordinator.set_prompt("Build a web server".to_string());
 
         coordinator.initialize().await.unwrap();

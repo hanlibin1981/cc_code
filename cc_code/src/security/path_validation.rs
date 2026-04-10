@@ -236,9 +236,14 @@ impl PathValidator {
             return Some(PathCheckResult::ask("Access to ~/.ssh requires confirmation"));
         }
 
-        // /etc 目录
-        if path_lower.starts_with("/etc") {
+        // /etc 目录（macOS 上 /etc 是 /private/etc 的 symlink）
+        if path_lower.starts_with("/etc") || path_lower.starts_with("/private/etc") {
             return Some(PathCheckResult::ask("Access to /etc requires confirmation"));
+        }
+
+        // /var 目录（macOS 上 /var 是 /private/var 的 symlink）
+        if path_lower.starts_with("/var") || path_lower.starts_with("/private/var") {
+            return Some(PathCheckResult::ask("Access to /var requires confirmation"));
         }
 
         // /system 目录（macOS SIP 相关）

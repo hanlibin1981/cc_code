@@ -57,6 +57,12 @@ const SYSTEM_PROMPT: &str = r#"你是 cc_code，一个专业的 AI 编程助手�
 - 工具执行后必须分析结果，再继续下一步
 - 复杂任务要分步骤完成，每步都要有明确的目标
 
+重要环境信息：
+- 运行平台：macOS（Apple Silicon）
+- 包管理器：brew（如需安装库用 brew install）
+- C++编译器：g++（版本可用 g++ --version 查看）
+- C++标准：优先使用 C++11/14/17，不要用非常新的特性确保兼容性
+
 工具调用格式（必须严格遵循）：
 当需要调用工具时，在回复末尾添加一行：
 [TOOL_CALL:{"name":"tool_name","arguments":{"param1":"value1","param2":"value2"}}]
@@ -151,7 +157,16 @@ impl Agent {
         session_id: uuid::Uuid,
         message: String,
     ) -> Result<AgentResponse, AgentError> {
-        // 获取 tool_results（需要 &mut session，所以先做）
+        // 先检查是否需要压缩（只读，不需要锁）
+        let should_compact = {
+            let manager = self.sessions.read().await;
+            manager
+                .get_session(&session_id)
+                .map(|s| crate::session::memory::needs_compaction(s))
+                .unwrap_or(false)
+        };
+
+        // 获取 tool_results（需要 &mut session）
         let tool_results = {
             let mut manager = self.sessions.write().await;
             let session = manager
@@ -161,9 +176,9 @@ impl Agent {
             // 添加用户消息
             session.add_message(MessageRole::User, message.clone());
 
-            // 检查是否需要压缩
-            if session.needs_compaction() {
-                compact_session(session);
+            // 如果之前检测到需要压缩，则执行压缩
+            if should_compact {
+                crate::session::memory::compact_session(session);
             }
 
             session.drain_tool_results()
@@ -319,6 +334,10 @@ impl Agent {
 
     /// 调用模型 API
     async fn call_model(&self, prompt: &str) -> Result<String, AgentError> {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/cc_timing.log") {
+            use std::io::Write;
+            writeln!(&mut f, "[{}] START len={}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(), prompt.len()).ok();
+        }
         // Anthropic Messages API 格式
         #[derive(Serialize)]
         struct AnthropicRequest {
@@ -365,6 +384,7 @@ impl Agent {
             .header("Content-Type", "application/json")
             .header("anthropic-version", "2023-06-01")
             .json(&request)
+            .timeout(std::time::Duration::from_secs(120))
             .send()
             .await
             .map_err(|e| AgentError::ModelError(e.to_string()))?;
@@ -384,19 +404,26 @@ impl Agent {
             .await
             .map_err(|e| AgentError::ModelError(e.to_string()))?;
 
-        // 从 Anthropic content 数组中提取文本（忽略 thinking 块）
+        // 从 Anthropic content 数组中提取文本
+        // MiniMax-M2 模型返回 thinking 块作为主要输出，提取其内容作为回退
         let text = chat_response
             .content
             .iter()
             .filter_map(|block| {
                 match block {
                     ContentBlock::Text { text } => Some(text.clone()),
-                    ContentBlock::Thinking { .. } => None,
+                    // MiniMax thinking 块的内容就是可见文本，不能忽略
+                    ContentBlock::Thinking { thinking } => Some(thinking.clone()),
                     ContentBlock::ToolUse { .. } => None,
                 }
             })
             .collect::<Vec<_>>()
             .join("\n");
+
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/cc_timing.log") {
+            use std::io::Write;
+            writeln!(&mut f, "[{}] END len={}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(), text.len()).ok();
+        }
 
         Ok(text)
     }

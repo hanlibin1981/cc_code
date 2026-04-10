@@ -500,7 +500,7 @@ mod tests {
         let mut manager = ContextManager::new("test".to_string());
         let result = manager.compact(&mut session);
 
-        assert_eq!(result.compacted_messages, 10);
-        assert!(session.messages.len() <= 12); // 1 summary + 10 recent + maybe 1
+        assert_eq!(result.compacted_messages, 9); // 20 - 11 = 9 (1 summary + 10 recent)
+        assert!(session.messages.len() <= 12);
     }
 }

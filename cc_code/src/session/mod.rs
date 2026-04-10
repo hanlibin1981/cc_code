@@ -164,7 +164,7 @@ impl Session {
     /// 检查是否需要压缩（基于字符数估算）
     pub fn needs_compaction(&self) -> bool {
         let total_chars: usize = self.messages.iter().map(|m| m.content.len()).sum();
-        const MAX_TOKEN_ESTIMATE: usize = 80_000;
+        const MAX_TOKEN_ESTIMATE: usize = 15_000;
         total_chars > MAX_TOKEN_ESTIMATE
     }
 

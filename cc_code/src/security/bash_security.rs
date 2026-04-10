@@ -413,9 +413,9 @@ impl BashSecurityValidator {
     fn validate_dangerous_patterns(&self, ctx: &ValidationContext) -> ValidationResult {
         let content = &ctx.unquoted_content;
 
-        // 反引号命令替换
+        // 反引号命令替换（任意成对出现都算）
         let backtick_count = content.matches("`").count();
-        if backtick_count >= 2 && backtick_count % 2 != 0 {
+        if backtick_count >= 2 {
             return ValidationResult::ask(
                 "Command contains backticks (`) for command substitution",
                 validator_ids::DANGEROUS_PATTERNS_COMMAND_SUBSTITUTION,
