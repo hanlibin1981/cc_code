@@ -1118,3 +1118,53 @@ cargo build
 4. **工具 streaming 模块大量未使用** — 架构完整但功能未启用
 5. **32 个 warnings** — dead_code/unused_imports 未清理
 
+
+---
+
+## [主题2] cc_code Rust MCP Server 优化（2026-04-28 第三/四轮）
+
+### 本次完成
+
+**1. 推理循环统一入口**
+- `process_message` 是唯一推理入口，内部用 loop 实现多轮工具调用
+- `add_tool_result` 只负责更新 session 状态，不触发推理（避免重复推理）
+- `max_reasoning_depth: 20` 防止无限循环，达到上限返回警告
+
+**2. 推理循环流程**
+```
+用户消息 → process_message
+    ↓
+call_model() → 检查 tool_calls
+    ↓
+有工具？→ 返回 WaitingTool + tool_calls（OpenClaw 执行）
+    ↓
+    ↓ [tool_results 注入 session]
+    ↓
+process_message 继续 → build_prompt 含 tool_results
+    ↓
+call_model() 继续推理
+    ↓
+无工具？→ 返回 Completed + text
+```
+
+**3. 工具结果双轨存储**
+- `session.tool_results: HashMap<tool_call_id, ToolResult>` — 按 ID（未使用）
+- `session.simple_tool_results: Vec<SimpleToolResult>` — 简化格式（供 drain）
+- `session.messages` — 对话历史（User/Assistant/Tool 三种角色）
+
+**4. 清理推理分支**
+- 删除 `add_tool_result` 中的 `call_model` 调用（之前有独立推理）
+- 现在只有 `process_message` 一个推理入口，逻辑清晰
+
+### 编译通过
+```
+cargo build
+  Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.70s
+```
+
+### 仍存在的问题
+
+1. **Coordinator 没有执行循环** — 只有状态机，worker 任务从未真正启动
+2. **Fork 实际执行是占位代码** — 需要连接 Agent 推理循环
+3. **工具 streaming 模块大量未使用**
+4. **Session 持久化** — 已有 persistence.rs，但只在启动时加载
