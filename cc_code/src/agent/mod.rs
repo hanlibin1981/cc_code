@@ -167,8 +167,8 @@ impl Agent {
         let mut reasoning_depth = 0u32;
         let max_depth = self.config.max_reasoning_depth;
 
-        // Step 1: 添加用户消息和待处理的工具结果
-        let pending_tool_results = {
+        // Step 1: 添加用户消息到 session（整个循环只做一次）
+        {
             let should_compact = {
                 let manager = self.sessions.read().await;
                 manager
@@ -186,14 +186,13 @@ impl Agent {
             if should_compact {
                 crate::session::memory::compact_session(session);
             }
-            session.drain_tool_results()
-        };
+        }
 
         // Step 2: 推理循环
         loop {
             reasoning_depth += 1;
 
-            // 获取 session 快照用于构建 prompt
+            // 获取 session 快照（不含 pending tool_results）
             let session_snapshot = {
                 let manager = self.sessions.read().await;
                 manager
@@ -202,8 +201,17 @@ impl Agent {
                     .clone()
             };
 
+            // 每轮都 drain 当轮的 tool_results（从上一轮工具执行来）
+            let pending_tool_results = {
+                let mut manager = self.sessions.write().await;
+                let session = manager
+                    .get_session_mut(&session_id)
+                    .ok_or_else(|| AgentError::SessionNotFound(session_id))?;
+                session.drain_tool_results()
+            };
+
             // 构建 prompt（包含历史消息 + 最新工具结果）
-            let prompt = self.build_prompt(&session_snapshot, pending_tool_results.clone());
+            let prompt = self.build_prompt(&session_snapshot, pending_tool_results);
 
             // 调用模型
             let response = self.call_model(&prompt).await?;

@@ -103,7 +103,7 @@ impl ToolRegistry {
 
         self.register(ToolDef {
             name: "cc_send_message".into(),
-            description: "向 cc_code 发送消息进行推理。cc_code 返回的响应中包含 [TOOL_CALL:...] 格式的工具调用指令，OpenClaw 应解析并执行。".into(),
+            description: "向 cc_code 发送消息进行推理。返回的响应中若包含 [TOOL_CALL:...] 则 OpenClaw 执行工具后再次调用本工具并传入 tool_results 参数。当返回无工具调用时表示推理完成。".into(),
             input_schema: ToolInputSchema {
                 properties: {
                     let mut props = HashMap::new();
@@ -125,7 +125,7 @@ impl ToolRegistry {
                         "tool_results".to_string(),
                         SchemaProperty {
                             param_type: "array".into(),
-                            description: Some(r#"可选，上一轮工具执行结果数组 [{tool: "name", result: "..."}]"#.into()),
+                            description: Some(r#"可选，上一轮工具执行结果数组 [{tool: "name", result: "...", is_error: false}]"#.into()),
                         },
                     );
                     props
