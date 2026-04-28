@@ -251,7 +251,7 @@ impl Agent {
         }
     }
 
-    /// 添加工具结果到 session
+    /// 添加工具结果到 session（不继续推理，由 process_message 统一处理）
     pub async fn add_tool_result(
         &mut self,
         session_id: uuid::Uuid,
@@ -259,64 +259,27 @@ impl Agent {
         tool_name: &str,
         result: String,
         is_error: bool,
-    ) -> Result<AgentResponse, AgentError> {
-        {
-            let mut manager = self.sessions.write().await;
-            let session = manager
-                .get_session_mut(&session_id)
-                .ok_or_else(|| AgentError::SessionNotFound(session_id))?;
+    ) -> Result<(), AgentError> {
+        let mut manager = self.sessions.write().await;
+        let session = manager
+            .get_session_mut(&session_id)
+            .ok_or_else(|| AgentError::SessionNotFound(session_id))?;
 
-            session.add_tool_result(tool_call_id, result.clone(), is_error);
-            session.add_message(
-                MessageRole::Tool,
-                format!(
-                    "[{}] 结果: {}",
-                    tool_name,
-                    if is_error {
-                        format!("错误: {}", result)
-                    } else {
-                        result
-                    }
-                ),
-            );
-            session.set_state(SessionState::Executing);
-        }
-
-        // 继续推理
-        let session = {
-            let manager = self.sessions.read().await;
-            manager
-                .get_session(&session_id)
-                .ok_or_else(|| AgentError::SessionNotFound(session_id))?
-                .clone()
-        };
-
-        let prompt = self.build_prompt(&session, vec![]);
-        let response = self.call_model(&prompt).await?;
-
-        let (text, tool_calls) = self.parse_response(&response);
-
-        {
-            let mut manager = self.sessions.write().await;
-            let session = manager
-                .get_session_mut(&session_id)
-                .ok_or_else(|| AgentError::SessionNotFound(session_id))?;
-
-            session.add_message(MessageRole::Assistant, text.clone());
-
-            if !tool_calls.is_empty() {
-                session.set_state(SessionState::WaitingTool);
-            } else {
-                session.set_state(SessionState::Completed);
-            }
-
-            return Ok(AgentResponse {
-                content: text,
-                tool_calls,
-                session_id,
-                state: session.state,
-            });
-        }
+        // 添加到 HashMap（按 tool_call_id）
+        session.add_tool_result(tool_call_id, result.clone(), is_error);
+        // 添加到 Vec（简化格式，供 drain）
+        session.add_simple_tool_result(tool_name.into(), result.clone(), is_error);
+        // 添加为 Tool 消息（对话历史）
+        session.add_message(
+            MessageRole::Tool,
+            format!(
+                "[{}] 结果: {}",
+                tool_name,
+                if is_error { format!("错误: {}", result) } else { result }
+            ),
+        );
+        session.set_state(SessionState::Executing);
+        Ok(())
     }
 
     /// 构建发送给模型的 prompt

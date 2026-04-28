@@ -314,6 +314,7 @@ async fn handle_tool_call(input: &CallToolInput, state: &mut ServerState) -> Cal
                                     .get("is_error")
                                     .and_then(|v| v.as_bool())
                                     .unwrap_or(false);
+                                // 添加简化结果（供 drain）
                                 session.add_simple_tool_result(
                                     tool.to_string(),
                                     content.to_string(),
@@ -324,6 +325,7 @@ async fn handle_tool_call(input: &CallToolInput, state: &mut ServerState) -> Cal
                     }
                 }
 
+                // 继续推理循环（add_tool_result 已更新 session，process_message 继续）
                 match state.agent.process_message(id, message.to_string()).await {
                     Ok(response) => {
                         let mut text = response.content.clone();
