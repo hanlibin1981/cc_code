@@ -148,6 +148,17 @@ impl Agent {
         manager.list_sessions()
     }
 
+    /// 保存 session 到磁盘（异步，写入失败不影响主流程）
+    async fn save_session(&self, session_id: uuid::Uuid) {
+        let manager = self.sessions.read().await.clone();
+        let id = session_id;
+        tokio::spawn(async move {
+            if let Err(e) = manager.save_session(&id) {
+                tracing::warn!("保存会话 {} 失败: {}", id, e);
+            }
+        });
+    }
+
     pub async fn stop_session(&self, session_id: uuid::Uuid) -> Result<(), AgentError> {
         let mut manager = self.sessions.write().await;
         let session = manager
@@ -232,6 +243,9 @@ impl Agent {
                 if !tool_calls.is_empty() && reasoning_depth < max_depth {
                     // 还有工具要调用，继续循环
                     session.set_state(SessionState::WaitingTool);
+                    // 保存进度
+                    drop(manager);
+                    self.save_session(session_id).await;
                     return Ok(AgentResponse {
                         content: text,
                         tool_calls,
@@ -241,6 +255,9 @@ impl Agent {
                 } else {
                     // 无更多工具调用（或达到最大深度），结束
                     session.set_state(SessionState::Completed);
+                    // 保存最终结果
+                    drop(manager);
+                    self.save_session(session_id).await;
                     return Ok(AgentResponse {
                         content: if reasoning_depth >= max_depth {
                             format!(

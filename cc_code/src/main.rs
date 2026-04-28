@@ -42,7 +42,7 @@ fn main() {
 
     // 初始化组件
     let tool_registry = ToolRegistry::new();
-    let data_dir = cc_code::session::SessionManager::default_data_dir();
+    let data_dir = cc_code::session::persistence::default_data_dir();
     let session_manager = match cc_code::session::SessionManager::new_with_persistence(data_dir.clone()) {
         Ok(manager) => {
             info!("会话持久化已启用: {:?}", data_dir);

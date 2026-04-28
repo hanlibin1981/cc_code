@@ -1,119 +1,86 @@
-//! Session 持久化模块
-//! 将会话状态保存到磁盘，重启后可恢复
+//! Session 持久化辅助函数
+//! 会话保存/加载逻辑（供 SessionManager 调用）
 
-use crate::session::{Session, SessionManager};
+use crate::session::{Session, SESSION_VERSION};
 use std::fs;
 use std::io::{self, BufReader, BufWriter};
 use std::path::Path;
 use tracing::{error, info};
 
-/// Session 文件格式版本
-const SESSION_VERSION: u32 = 1;
+/// 将 session 序列化并写入文件
+pub fn write_session_file(session: &Session, dir: &Path) -> io::Result<()> {
+    #[derive(serde::Serialize)]
+    struct SessionMeta<'a> {
+        version: u32,
+        session: &'a Session,
+    }
 
-/// 持久化会话元数据（不含消息体，用于列表展示）
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SessionMeta {
-    version: u32,
-    session: Session,
+    fs::create_dir_all(dir)?;
+    let file_path = dir.join(format!("{}.json", session.id));
+    let file = fs::File::create(&file_path)?;
+    let writer = BufWriter::new(file);
+
+    let meta = SessionMeta {
+        version: SESSION_VERSION,
+        session,
+    };
+
+    serde_json::to_writer(writer, &meta)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    Ok(())
 }
 
-impl SessionManager {
-    /// 将所有会话持久化到指定目录
-    pub fn persist_to_dir(&self, dir: &Path) -> io::Result<()> {
-        fs::create_dir_all(dir)?;
+/// 从文件反序列化 session
+pub fn read_session_file(path: &Path) -> io::Result<Session> {
+    let file = fs::File::open(path)?;
+    let reader = BufReader::new(file);
 
-        for session in self.sessions.values() {
-            let file_path = dir.join(format!("{}.json", session.id));
-            let file = fs::File::create(&file_path)?;
-            let writer = BufWriter::new(file);
-
-            let meta = SessionMeta {
-                version: SESSION_VERSION,
-                session: session.clone(),
-            };
-
-            serde_json::to_writer(writer, &meta)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        }
-
-        info!("已保存 {} 个会话到 {:?}", self.sessions.len(), dir);
-        Ok(())
+    #[derive(serde::Deserialize)]
+    struct SessionMeta {
+        version: u32,
+        session: Session,
     }
 
-    /// 从指定目录加载所有会话
-    pub fn load_from_dir(&mut self, dir: &Path) -> io::Result<usize> {
-        if !dir.exists() {
-            return Ok(0);
+    let meta: SessionMeta = serde_json::from_reader(reader)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    if meta.version != SESSION_VERSION {
+        error!("会话版本不匹配: {} vs {}", meta.version, SESSION_VERSION);
+    }
+
+    Ok(meta.session)
+}
+
+/// 从目录加载所有会话文件
+pub fn load_sessions_from_dir(dir: &Path) -> io::Result<Vec<Session>> {
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut sessions = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
         }
-
-        let mut loaded = 0;
-
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
+        match read_session_file(&path) {
+            Ok(session) => {
+                info!("加载会话 {:?}", path);
+                sessions.push(session);
             }
-
-            match Self::load_session_file(&path) {
-                Ok(session) => {
-                    let id = session.id;
-                    if self.sessions.insert(id, session).is_none() {
-                        loaded += 1;
-                    }
-                }
-                Err(e) => {
-                    error!("加载会话失败 {:?}: {}", path, e);
-                }
+            Err(e) => {
+                error!("加载会话失败 {:?}: {}", path, e);
             }
         }
-
-        info!("从 {:?} 加载了 {} 个会话", dir, loaded);
-        Ok(loaded)
     }
+    Ok(sessions)
+}
 
-    /// 加载单个会话文件
-    fn load_session_file(path: &Path) -> io::Result<Session> {
-        let file = fs::File::open(path)?;
-        let reader = BufReader::new(file);
-
-        let meta: SessionMeta = serde_json::from_reader(reader)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-        if meta.version != SESSION_VERSION {
-            error!("会话版本不匹配: {} vs {}", meta.version, SESSION_VERSION);
-        }
-
-        Ok(meta.session)
-    }
-
-    /// 保存指定会话到文件
-    pub fn save_session(&self, id: &uuid::Uuid, dir: &Path) -> io::Result<()> {
-        let session = self.sessions.get(id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Session not found"))?;
-
-        fs::create_dir_all(dir)?;
-        let file_path = dir.join(format!("{}.json", id));
-        let file = fs::File::create(&file_path)?;
-        let writer = BufWriter::new(file);
-
-        let meta = SessionMeta {
-            version: SESSION_VERSION,
-            session: session.clone(),
-        };
-
-        serde_json::to_writer(writer, &meta)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-        Ok(())
-    }
-
-    /// 获取数据目录（默认 ~/.local/share/cc_code）
-    pub fn default_data_dir() -> std::path::PathBuf {
-        dirs::data_local_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("cc_code")
-            .join("sessions")
-    }
+/// 获取默认数据目录
+pub fn default_data_dir() -> std::path::PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("cc_code")
+        .join("sessions")
 }

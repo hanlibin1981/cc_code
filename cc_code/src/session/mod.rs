@@ -13,6 +13,8 @@ use uuid::Uuid;
 
 /// Session 空闲超时时间（秒）
 const SESSION_TIMEOUT_SECS: i64 = 3600;
+/// Session 文件格式版本
+const SESSION_VERSION: u32 = 1;
 
 /// 会话状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,7 +199,9 @@ impl SessionManager {
     /// 从指定目录加载会话并设置自动持久化
     pub fn new_with_persistence(dir: std::path::PathBuf) -> io::Result<Self> {
         let mut manager = Self::new();
-        manager.load_from_dir(&dir)?;
+        for session in persistence::load_sessions_from_dir(&dir)? {
+            manager.sessions.insert(session.id, session);
+        }
         manager.persist_dir = Some(dir);
         Ok(manager)
     }
@@ -250,6 +254,46 @@ impl SessionManager {
                 message_count: s.messages.len(),
             })
             .collect()
+    }
+
+    /// 保存指定会话到磁盘（如果配置了 persist_dir）
+    pub fn save_session(&self, id: &Uuid) -> io::Result<()> {
+        if let Some(dir) = &self.persist_dir {
+            self.persist_session_to_dir(id, dir)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// 持久化到指定目录（内部方法）
+    pub(crate) fn persist_session_to_dir(&self, id: &Uuid, dir: &std::path::Path) -> io::Result<()> {
+        use crate::session::SESSION_VERSION;
+        use std::fs;
+        use std::io::BufWriter;
+
+        let session = self.sessions.get(id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Session not found"))?;
+
+        fs::create_dir_all(dir)?;
+        let file_path = dir.join(format!("{}.json", id));
+        let file = fs::File::create(&file_path)?;
+        let writer = BufWriter::new(file);
+
+        #[derive(serde::Serialize)]
+        struct SessionMeta<'a> {
+            version: u32,
+            session: &'a Session,
+        }
+
+        let meta = SessionMeta {
+            version: SESSION_VERSION,
+            session,
+        };
+
+        serde_json::to_writer(writer, &meta)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        Ok(())
     }
 }
 
