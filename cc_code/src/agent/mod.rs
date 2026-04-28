@@ -25,6 +25,8 @@ pub struct AgentConfig {
     pub system_prompt: String,
     /// 最大输出 tokens
     pub max_output_tokens: u32,
+    /// 最大推理深度（防止无限循环）
+    pub max_reasoning_depth: u32,
 }
 
 impl Default for AgentConfig {
@@ -35,6 +37,7 @@ impl Default for AgentConfig {
             model_name: "MiniMax-M2".into(),
             system_prompt: SYSTEM_PROMPT.into(),
             max_output_tokens: 8192,
+            max_reasoning_depth: 20,
         }
     }
 }
@@ -154,78 +157,97 @@ impl Agent {
         Ok(())
     }
 
-    /// 处理用户消息并生成响应
+    /// 处理用户消息并生成响应（带推理循环）
     pub async fn process_message(
         &mut self,
         session_id: uuid::Uuid,
         message: String,
     ) -> Result<AgentResponse, AgentError> {
-        // 先检查是否需要压缩（只读，不需要锁）
-        let should_compact = {
-            let manager = self.sessions.read().await;
-            manager
-                .get_session(&session_id)
-                .map(|s| crate::session::memory::needs_compaction(s))
-                .unwrap_or(false)
-        };
+        // 推理深度计数（防止无限循环）
+        let mut reasoning_depth = 0u32;
+        let max_depth = self.config.max_reasoning_depth;
 
-        // 获取 tool_results（需要 &mut session）
-        let tool_results = {
+        // Step 1: 添加用户消息和待处理的工具结果
+        let pending_tool_results = {
+            let should_compact = {
+                let manager = self.sessions.read().await;
+                manager
+                    .get_session(&session_id)
+                    .map(|s| crate::session::memory::needs_compaction(s))
+                    .unwrap_or(false)
+            };
+
             let mut manager = self.sessions.write().await;
             let session = manager
                 .get_session_mut(&session_id)
                 .ok_or_else(|| AgentError::SessionNotFound(session_id))?;
 
-            // 添加用户消息
             session.add_message(MessageRole::User, message.clone());
-
-            // 如果之前检测到需要压缩，则执行压缩
             if should_compact {
                 crate::session::memory::compact_session(session);
             }
-
             session.drain_tool_results()
         };
 
-        // 获取 session 克隆（用于构建 prompt）
-        let session = {
-            let manager = self.sessions.read().await;
-            manager
-                .get_session(&session_id)
-                .ok_or_else(|| AgentError::SessionNotFound(session_id))?
-                .clone()
-        };
+        // Step 2: 推理循环
+        loop {
+            reasoning_depth += 1;
 
-        // 构建 prompt
-        let prompt = self.build_prompt(&session, tool_results);
+            // 获取 session 快照用于构建 prompt
+            let session_snapshot = {
+                let manager = self.sessions.read().await;
+                manager
+                    .get_session(&session_id)
+                    .ok_or_else(|| AgentError::SessionNotFound(session_id))?
+                    .clone()
+            };
 
-        // 调用模型
-        let response = self.call_model(&prompt).await?;
+            // 构建 prompt（包含历史消息 + 最新工具结果）
+            let prompt = self.build_prompt(&session_snapshot, pending_tool_results.clone());
 
-        // 更新 session
-        {
-            let mut manager = self.sessions.write().await;
-            let session = manager
-                .get_session_mut(&session_id)
-                .ok_or_else(|| AgentError::SessionNotFound(session_id))?;
+            // 调用模型
+            let response = self.call_model(&prompt).await?;
 
-            // 解析响应中的工具调用
+            // 解析响应
             let (text, tool_calls) = self.parse_response(&response);
 
-            session.add_message(MessageRole::Assistant, text.clone());
+            // 更新 session
+            {
+                let mut manager = self.sessions.write().await;
+                let session = manager
+                    .get_session_mut(&session_id)
+                    .ok_or_else(|| AgentError::SessionNotFound(session_id))?;
 
-            if !tool_calls.is_empty() {
-                session.set_state(SessionState::WaitingTool);
-            } else {
-                session.set_state(SessionState::Completed);
+                session.add_message(MessageRole::Assistant, text.clone());
+
+                // 决定下一步
+                if !tool_calls.is_empty() && reasoning_depth < max_depth {
+                    // 还有工具要调用，继续循环
+                    session.set_state(SessionState::WaitingTool);
+                    return Ok(AgentResponse {
+                        content: text,
+                        tool_calls,
+                        session_id,
+                        state: SessionState::WaitingTool,
+                    });
+                } else {
+                    // 无更多工具调用（或达到最大深度），结束
+                    session.set_state(SessionState::Completed);
+                    return Ok(AgentResponse {
+                        content: if reasoning_depth >= max_depth {
+                            format!(
+                                "{}\n\n[推理深度达到上限 ({}), 请继续或开启新对话]",
+                                text, max_depth
+                            )
+                        } else {
+                            text
+                        },
+                        tool_calls,
+                        session_id,
+                        state: SessionState::Completed,
+                    });
+                }
             }
-
-            Ok(AgentResponse {
-                content: text,
-                tool_calls,
-                session_id,
-                state: session.state,
-            })
         }
     }
 
