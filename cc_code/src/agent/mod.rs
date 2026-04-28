@@ -341,25 +341,12 @@ impl Agent {
             }
         }
 
-        prompt.push_str("\n\n请继续完成任务或调用工具:");
+        // 系统提示词已说明工具使用规则，不需要追加提示
         prompt
     }
 
     /// 调用模型 API（带重试逻辑）
     async fn call_model(&mut self, prompt: &str) -> Result<String, AgentError> {
-        use std::io::Write as IoWrite;
-        let start_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/cc_timing.log")
-        {
-            writeln!(&mut f, "[{}] START len={}", start_ms, prompt.len()).ok();
-        }
-
         // Anthropic Messages API 格式
         #[derive(Serialize)]
         struct AnthropicRequest {
@@ -441,17 +428,6 @@ impl Agent {
 
                 match decision {
                     RetryDecision::Retry { delay_ms } => {
-                        let end_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis();
-                        if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open("/tmp/cc_timing.log")
-                        {
-                            writeln!(&mut f, "[{}] RETRY status={} delay={}ms", end_ms, status.as_u16(), delay_ms).ok();
-                        }
                         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                         self.retry_handler.borrow_mut().reset();
                         continue;
@@ -494,18 +470,6 @@ impl Agent {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-
-            let end_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis();
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/cc_timing.log")
-            {
-                writeln!(&mut f, "[{}] END len={}", end_ms, text.len()).ok();
-            }
 
             return Ok(text);
         }
