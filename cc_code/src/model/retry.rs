@@ -8,7 +8,6 @@
 //! - 重试时发送 progress 消息告知客户端
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 /// 重试配置
 #[derive(Debug, Clone)]
@@ -115,7 +114,7 @@ impl ApiError {
 }
 
 /// 重试决策
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RetryDecision {
     /// 立即返回，不重试
     Return,
@@ -328,7 +327,7 @@ impl RetryProgressMessage {
                     "Rate limited. Retrying...".to_string()
                 }
             }
-            ApiError::ConnectionError { code, message } => {
+            ApiError::ConnectionError { code, message: _ } => {
                 format!("Connection error ({}). Retrying...", code)
             }
             ApiError::HttpError { status, message } => {

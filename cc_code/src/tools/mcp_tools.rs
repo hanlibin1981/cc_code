@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! MCP 工具调用
 //! 生成 MCP 格式的工具调用请求
 

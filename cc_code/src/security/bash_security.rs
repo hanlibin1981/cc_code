@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Bash 命令安全验证 - 完整实现
 //! 参考 Claude Code 的 bashSecurity.ts，实现 20+ 安全验证器
 //! 

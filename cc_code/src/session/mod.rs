@@ -3,10 +3,12 @@
 
 pub mod memory;
 pub mod compact;
+pub mod persistence;
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io;
 use uuid::Uuid;
 
 /// Session 空闲超时时间（秒）
@@ -180,13 +182,24 @@ impl Session {
 #[derive(Debug, Clone)]
 pub struct SessionManager {
     sessions: HashMap<Uuid, Session>,
+    /// 持久化目录（如果设置了自动保存）
+    persist_dir: Option<std::path::PathBuf>,
 }
 
 impl SessionManager {
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
+            persist_dir: None,
         }
+    }
+
+    /// 从指定目录加载会话并设置自动持久化
+    pub fn new_with_persistence(dir: std::path::PathBuf) -> io::Result<Self> {
+        let mut manager = Self::new();
+        manager.load_from_dir(&dir)?;
+        manager.persist_dir = Some(dir);
+        Ok(manager)
     }
 
     /// 清理超时会话（超过 SESSION_TIMEOUT_SECS 未访问的会话）

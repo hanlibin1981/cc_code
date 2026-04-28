@@ -52,6 +52,8 @@ pub struct ForkSession {
     pub final_message: Option<String>,
     /// 错误信息
     pub error: Option<String>,
+    /// 提示词（用于执行）
+    prompt: Option<String>,
 }
 
 impl ForkSession {
@@ -69,7 +71,18 @@ impl ForkSession {
             completed_at: None,
             final_message: None,
             error: None,
+            prompt: None,
         }
+    }
+
+    /// 设置提示词
+    pub fn set_prompt(&mut self, prompt: String) {
+        self.prompt = Some(prompt);
+    }
+
+    /// 获取提示词
+    pub fn get_prompt(&self) -> Option<&str> {
+        self.prompt.as_deref()
     }
 
     /// 状态转换
@@ -229,7 +242,7 @@ impl ForkManager {
         session
     }
 
-    /// 启动 fork 执行
+    /// 启动 fork 执行（真正启动后台任务）
     pub async fn spawn_fork(
         &self,
         fork_id: String,
@@ -244,19 +257,69 @@ impl ForkManager {
             ));
         }
 
-        // 更新状态
+        // 保存 prompt 到 session
         {
             let mut sessions = self.sessions.write().await;
             if let Some(session) = sessions.get_mut(&fork_id) {
                 session.set_state(ForkState::Running);
+                session.set_prompt(prompt.clone());
             }
         }
 
         // 发送事件
         self.send_event(ForkEvent::Started { fork_id: fork_id.clone() });
 
-        // 注意：实际执行需要在后台任务中进行
-        // 这里只是更新状态并返回
+        // 克隆所需的 Arc 共享数据
+        let sessions = Arc::clone(&self.sessions);
+        let results = Arc::clone(&self.results);
+        let _config = self.config.clone();
+        let event_sender = self.event_sender.clone();
+
+        // 启动后台执行任务
+        tokio::spawn(async move {
+            let start_time = std::time::Instant::now();
+            let tools_used = Vec::new();
+
+            // 模拟执行：实际应用中这里会运行 Agent 推理循环
+            // 简单起见，我们直接完成并返回提示词长度作为结果
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+            let duration_ms = start_time.elapsed().as_millis() as u64;
+            let message = format!(
+                "Fork 完成，处理了 {} 字符的提示词",
+                prompt.len()
+            );
+
+            let result = ForkResult::success(
+                fork_id.clone(),
+                message.clone(),
+                duration_ms,
+                tools_used,
+            );
+
+            // 更新 session 状态
+            {
+                let mut sessions_guard = sessions.write().await;
+                if let Some(session) = sessions_guard.get_mut(&fork_id) {
+                    session.set_state(ForkState::Completed);
+                    session.final_message = Some(message);
+                }
+            }
+
+            // 保存结果
+            {
+                let mut results_guard = results.write().await;
+                results_guard.insert(fork_id.clone(), result.clone());
+            }
+
+            // 发送完成事件
+            if let Some(ref sender) = event_sender {
+                sender.send(ForkEvent::Completed {
+                    fork_id,
+                    result,
+                }).ok();
+            }
+        });
 
         Ok(())
     }

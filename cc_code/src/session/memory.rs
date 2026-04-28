@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Session Memory - 对话历史压缩
 //! 类似 Claude Code 的 sessionMemory.ts，当 token 预算耗尽时压缩历史
 //! 

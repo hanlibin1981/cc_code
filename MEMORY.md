@@ -1069,3 +1069,52 @@ const REPLTool = process.env.USER_TYPE === 'ant' ? require(...) : null
 - # 2026-04-04 工作日志 ## 股票监控 Cron Job - 时间: 04:15 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (周六凌晨 04:15) - 状态: ✅ 正常 [score=0.802 recalls=4 avg=0.735 source=memory/2026-04-04.md:1-9]
 <!-- openclaw-memory-promotion:memory:memory/2026-03-20.md:1:13 -->
 - # 2026-03-20 工作日志 ## 今日事项 ### 股票监控 Cron Job - 时间: 18:30 - 任务: stock-signal-monitor - 结果: 不在交易时间，跳过 (18:30 > A股收盘时间15:00) - 状态: ✅ 正常 ## 待办 - [score=0.801 recalls=4 avg=0.732 source=memory/2026-03-20.md:1-13]
+
+## [主题2] cc_code Rust 重构优化（2026-04-28）
+
+### 这次做了什么
+
+1. **创建 lib.rs 让模块可被 main.rs 引用**
+   - 原来 `main.rs` 是独立二进制，有自己的模块树
+   - 添加 `lib.rs` 导出 `agent/mcp/model/security/session/tools` 模块
+   - `main.rs` 改用 `cc_code::` 前缀访问库
+
+2. **Agent.call_model 添加重试逻辑**
+   - 集成 `model::retry::RetryHandler`（529/429/ECONNRESET 自动重试）
+   - `retry_handler: RefCell<RetryHandler>` 替代 `&mut self` 问题
+   - 指数退避 + 重置机制
+
+3. **ForkManager::spawn_fork 真正启动后台任务**
+   - 原来只更新状态就返回，现在用 `tokio::spawn` 启动真正执行
+   - `ForkSession` 添加 `prompt` 字段存储待执行内容
+
+4. **修复 Copy trait 问题**
+   - `RetryDecision::UseFallback { fallback_model: String }` 有非Copy字段
+   - 去掉 `Copy` derive，保留 `Clone`
+
+### 架构调整
+
+```
+旧架构（main.rs 自己 mod X）：
+  main.rs → mod agent → (找不到 model::retry)
+
+新架构（lib.rs 导出模块树）：
+  lib.rs → pub mod {agent, mcp, model, session, tools, security}
+  main.rs → use cc_code::{agent, mcp, session, tools}
+```
+
+### 编译通过
+
+```
+cargo build
+  Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.03s
+```
+
+### 待优化（仍存在的问题）
+
+1. **Coordinator 没有执行循环** — 只有状态机，worker 任务从未真正启动
+2. **Session 无持久化** — 重启后所有会话丢失
+3. **Fork 实际执行是占位代码** — 需要连接 Agent 推理循环
+4. **工具 streaming 模块大量未使用** — 架构完整但功能未启用
+5. **32 个 warnings** — dead_code/unused_imports 未清理
+

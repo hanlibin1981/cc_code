@@ -5,9 +5,10 @@ mod task;
 pub mod fork;
 pub mod coordinator;
 
-use crate::session::memory::compact_session;
+use crate::model::retry::{ApiError, RetryDecision, RetryHandler};
 use crate::session::{MessageRole, Session, SessionManager, SessionState};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -114,6 +115,7 @@ pub struct Agent {
     config: AgentConfig,
     sessions: Arc<RwLock<SessionManager>>,
     http_client: reqwest::Client,
+    retry_handler: RefCell<RetryHandler>,
 }
 
 impl Agent {
@@ -126,6 +128,7 @@ impl Agent {
             config,
             sessions,
             http_client: reqwest::Client::new(),
+            retry_handler: RefCell::new(RetryHandler::new()),
         }
     }
 
@@ -153,7 +156,7 @@ impl Agent {
 
     /// 处理用户消息并生成响应
     pub async fn process_message(
-        &self,
+        &mut self,
         session_id: uuid::Uuid,
         message: String,
     ) -> Result<AgentResponse, AgentError> {
@@ -228,7 +231,7 @@ impl Agent {
 
     /// 添加工具结果到 session
     pub async fn add_tool_result(
-        &self,
+        &mut self,
         session_id: uuid::Uuid,
         tool_call_id: &str,
         tool_name: &str,
@@ -332,12 +335,21 @@ impl Agent {
         prompt
     }
 
-    /// 调用模型 API
-    async fn call_model(&self, prompt: &str) -> Result<String, AgentError> {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/cc_timing.log") {
-            use std::io::Write;
-            writeln!(&mut f, "[{}] START len={}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(), prompt.len()).ok();
+    /// 调用模型 API（带重试逻辑）
+    async fn call_model(&mut self, prompt: &str) -> Result<String, AgentError> {
+        use std::io::Write as IoWrite;
+        let start_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/cc_timing.log")
+        {
+            writeln!(&mut f, "[{}] START len={}", start_ms, prompt.len()).ok();
         }
+
         // Anthropic Messages API 格式
         #[derive(Serialize)]
         struct AnthropicRequest {
@@ -365,6 +377,7 @@ impl Agent {
             #[serde(rename = "thinking")]
             Thinking { thinking: String },
             #[serde(rename = "tool_use")]
+            #[allow(dead_code)]
             ToolUse { id: String, name: String, input: serde_json::Value },
         }
 
@@ -377,55 +390,115 @@ impl Agent {
             max_tokens: self.config.max_output_tokens,
         };
 
-        let response = self
-            .http_client
-            .post(&self.config.model_url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .header("anthropic-version", "2023-06-01")
-            .json(&request)
-            .timeout(std::time::Duration::from_secs(120))
-            .send()
-            .await
-            .map_err(|e| AgentError::ModelError(e.to_string()))?;
+        loop {
+            let response = match self
+                .http_client
+                .post(&self.config.model_url)
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .header("Content-Type", "application/json")
+                .header("anthropic-version", "2023-06-01")
+                .json(&request)
+                .timeout(std::time::Duration::from_secs(120))
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let api_err = ApiError::ConnectionError {
+                        code: "REQUEST_FAILED".to_string(),
+                        message: e.to_string(),
+                    };
+                    let decision = self.retry_handler.borrow_mut().get_decision(&api_err, Some("agent"));
+                    match decision {
+                        RetryDecision::Retry { delay_ms } => {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                            continue;
+                        }
+                        _ => return Err(AgentError::ModelError(e.to_string())),
+                    }
+                }
+            };
+            let status = response.status();
+            if !status.is_success() {
+                let headers: Vec<(String, String)> = response
+                    .headers()
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                    .collect();
+                let body = response.text().await.unwrap_or_default();
+                let api_err = RetryHandler::parse_http_error(status.as_u16(), &body, &headers);
+                let decision = self.retry_handler.borrow_mut().get_decision(&api_err, Some("agent"));
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(AgentError::ModelError(format!(
-                "HTTP {}: {}",
-                status.as_u16(),
-                body
-            )));
-        }
+                match decision {
+                    RetryDecision::Retry { delay_ms } => {
+                        let end_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis();
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("/tmp/cc_timing.log")
+                        {
+                            writeln!(&mut f, "[{}] RETRY status={} delay={}ms", end_ms, status.as_u16(), delay_ms).ok();
+                        }
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                        self.retry_handler.borrow_mut().reset();
+                        continue;
+                    }
+                    RetryDecision::GiveUp => {
+                        return Err(AgentError::ModelError(format!(
+                            "HTTP {}: {} (after retries)",
+                            status.as_u16(),
+                            body
+                        )));
+                    }
+                    _ => {
+                        return Err(AgentError::ModelError(format!(
+                            "HTTP {}: {}",
+                            status.as_u16(),
+                            body
+                        )));
+                    }
+                }
+            }
 
-        let chat_response: AnthropicResponse = response
-            .json()
-            .await
-            .map_err(|e| AgentError::ModelError(e.to_string()))?;
+            let chat_response: AnthropicResponse = match response.json().await {
+                Ok(c) => c,
+                Err(e) => {
+                    return Err(AgentError::ModelError(format!(
+                        "Failed to parse response: {}",
+                        e
+                    )));
+                }
+            };
 
-        // 从 Anthropic content 数组中提取文本
-        // MiniMax-M2 模型返回 thinking 块作为主要输出，提取其内容作为回退
-        let text = chat_response
-            .content
-            .iter()
-            .filter_map(|block| {
-                match block {
+            // 从 Anthropic content 数组中提取文本
+            let text = chat_response
+                .content
+                .iter()
+                .filter_map(|block| match block {
                     ContentBlock::Text { text } => Some(text.clone()),
-                    // MiniMax thinking 块的内容就是可见文本，不能忽略
                     ContentBlock::Thinking { thinking } => Some(thinking.clone()),
                     ContentBlock::ToolUse { .. } => None,
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
 
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/cc_timing.log") {
-            use std::io::Write;
-            writeln!(&mut f, "[{}] END len={}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(), text.len()).ok();
+            let end_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/cc_timing.log")
+            {
+                writeln!(&mut f, "[{}] END len={}", end_ms, text.len()).ok();
+            }
+
+            return Ok(text);
         }
-
-        Ok(text)
     }
 
     /// 解析模型响应，提取文本和工具调用

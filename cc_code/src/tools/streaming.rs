@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! 流式工具执行器 + 并发控制
 //! 参考 Claude Code 的 StreamingToolExecutor 和 toolOrchestration.ts
 //! 
@@ -7,11 +8,9 @@
 //! - 非并发安全工具独占执行权（串行）
 //! - 每个工具用 toolUseId 追踪，支持取消
 
-use crate::session::SessionManager;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 /// 工具状态

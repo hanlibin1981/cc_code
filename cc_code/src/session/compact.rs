@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! 上下文长度管理（自动压缩）
 //! 参考 Claude Code 的 autoCompact.ts 和 compact.ts
 //! 
@@ -8,7 +9,6 @@
 
 use crate::session::{MessageRole, Session, SessionMessage};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// 上下文窗口警告级别
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

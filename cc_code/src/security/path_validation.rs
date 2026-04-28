@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! 路径访问验证
 //! 参考 Claude Code 的 pathValidation.ts
 //! 
@@ -209,7 +210,7 @@ impl PathValidator {
     /// 检测 UNC 路径
     fn contains_unc_path(&self, path: &str) -> bool {
         // UNC 路径如 \\server\share
-        path.starts_with("\\\\") || RegexCache::is_match(r"^[A-Za-z]:\\", path)
+        path.starts_with("\\\\") || regex_cache::is_match(r"^[A-Za-z]:\\", path)
     }
 
     /// 检测路径遍历
@@ -285,8 +286,8 @@ impl PathValidator {
         }
 
         // Windows 系统目录
-        if RegexCache::is_match(r"^[A-Za-z]:\\windows\\system", &path_lower)
-            || RegexCache::is_match(r"^[A-Za-z]:\\program files", &path_lower) {
+        if regex_cache::is_match(r"^[A-Za-z]:\\windows\\system", &path_lower)
+            || regex_cache::is_match(r"^[A-Za-z]:\\program files", &path_lower) {
             return Some(PathCheckResult::ask("Windows system directory access requires confirmation"));
         }
 
@@ -392,7 +393,7 @@ impl PathValidator {
 }
 
 /// 简单正则
-mod RegexCache {
+mod regex_cache {
     use std::collections::HashMap;
     use once_cell::sync::Lazy;
     use regex::Regex;

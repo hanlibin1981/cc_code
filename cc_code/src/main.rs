@@ -1,18 +1,13 @@
 //! cc_code - OpenClaw 编程开发助手
 //! MCP 服务器入口
 
-mod agent;
-mod mcp;
-mod security;
-mod session;
-mod tools;
-
-use agent::{Agent, AgentConfig};
-use mcp::{
+use cc_code::agent::{Agent, AgentConfig};
+use cc_code::mcp::{
     CallToolInput, CallToolResult, ContentBlock, JsonRpcRequest, JsonRpcResponse, ListToolsResult,
     ServerCapabilities, Tool,
 };
-use session::SessionManager;
+use cc_code::session::SessionManager;
+use cc_code::tools::ToolRegistry;
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -23,7 +18,7 @@ use uuid::Uuid;
 /// 全局状态
 struct ServerState {
     agent: Agent,
-    tool_registry: tools::ToolRegistry,
+    tool_registry: ToolRegistry,
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
 }
 
@@ -46,14 +41,24 @@ fn main() {
     let rt = Runtime::new().expect("Failed to create Tokio runtime");
 
     // 初始化组件
-    let tool_registry = tools::ToolRegistry::new();
-    let session_manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let tool_registry = ToolRegistry::new();
+    let data_dir = cc_code::session::SessionManager::default_data_dir();
+    let session_manager = match cc_code::session::SessionManager::new_with_persistence(data_dir.clone()) {
+        Ok(manager) => {
+            info!("会话持久化已启用: {:?}", data_dir);
+            Arc::new(tokio::sync::RwLock::new(manager))
+        }
+        Err(e) => {
+            info!("无法加载持久化会话（将创建新会话）: {}", e);
+            Arc::new(tokio::sync::RwLock::new(SessionManager::new()))
+        }
+    };
 
     // 创建 Agent（共享 session_manager）
     let config = AgentConfig::default();
     let agent = Agent::with_sessions(config, session_manager.clone());
 
-    let state = ServerState {
+    let mut state = ServerState {
         agent,
         tool_registry,
         session_manager,
@@ -93,7 +98,7 @@ fn main() {
         };
 
         // 处理请求
-        let response = rt.block_on(handle_request(&request, &state));
+        let response = rt.block_on(handle_request(&request, &mut state));
 
         // 只对有 id 的请求发送响应（notification 返回 None）
         if let Some(response) = response {
@@ -110,7 +115,7 @@ fn main() {
 
 /// 处理 MCP 请求
 /// 返回 None 表示这是 notification（不需要响应）
-async fn handle_request(request: &JsonRpcRequest, state: &ServerState) -> Option<JsonRpcResponse> {
+async fn handle_request(request: &JsonRpcRequest, state: &mut ServerState) -> Option<JsonRpcResponse> {
     let id = request.id.clone();
 
     // notification 没有 id，不需要响应
@@ -134,7 +139,7 @@ async fn handle_request(request: &JsonRpcRequest, state: &ServerState) -> Option
             let result = serde_json::json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": ServerCapabilities {
-                    tools: Some(mcp::ToolsCapability { list_changed: true }),
+                    tools: Some(cc_code::mcp::ToolsCapability { list_changed: true }),
                     resources: None,
                     prompts: None,
                 },
@@ -200,7 +205,7 @@ async fn handle_request(request: &JsonRpcRequest, state: &ServerState) -> Option
 }
 
 /// 处理工具调用
-async fn handle_tool_call(input: &CallToolInput, state: &ServerState) -> CallToolResult {
+async fn handle_tool_call(input: &CallToolInput, state: &mut ServerState) -> CallToolResult {
     let tool_name = &input.name;
     let args = &input.arguments;
 
@@ -355,7 +360,6 @@ async fn handle_tool_call(input: &CallToolInput, state: &ServerState) -> CallToo
             }
         }
 
-        // 未知工具
         // 未知工具
         _ => {
             CallToolResult {
