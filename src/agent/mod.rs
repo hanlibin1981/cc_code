@@ -11,11 +11,14 @@
 pub mod fork;
 #[allow(unused)]
 pub mod coordinator;
+pub mod streaming;
 
 use crate::session::{MessageRole, Session, SessionManager, SessionState};
+use crate::agent::streaming::{StreamingAccumulator, StreamingConfig, StreamingState};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use futures_util::{TryStreamExt, AsyncBufReadExt};
 
 /// Agent 配置
 #[derive(Debug, Clone)]
@@ -350,6 +353,116 @@ impl Agent {
         Ok(text)
     }
 
+    /// 调用模型（流式版本）
+    /// 返回累积器，在外部逐步添加内容
+    pub async fn call_model_streaming(
+        &self,
+        messages: &[ChatMessage],
+        config: &StreamingConfig,
+    ) -> Result<(StreamingAccumulator, StreamingState), AgentError> {
+        // 检查上下文长度
+        let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+        const MAX_CONTEXT: usize = 100_000;
+        if total_chars > MAX_CONTEXT {
+            return Err(AgentError::ContextTooLong(total_chars));
+        }
+
+        #[derive(Serialize)]
+        struct StreamRequest<'a> {
+            model: &'a str,
+            messages: &'a [ChatMessage],
+            max_tokens: u32,
+        }
+
+
+        let request = StreamRequest {
+            model: &self.config.model_name,
+            messages,
+            max_tokens: self.config.max_output_tokens,
+        };
+
+
+        let response = self
+            .http_client
+            .post(&self.config.model_url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .timeout(std::time::Duration::from_secs(300))
+            .send()
+            .await
+            .map_err(|e| AgentError::ModelError(e.to_string()))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AgentError::ModelError(format!(
+                "HTTP {}: {}",
+                status.as_u16(),
+                body
+            )));
+        }
+
+        // 流式读取响应
+        let mut accumulator = StreamingAccumulator::new();
+        let mut state = StreamingState::Streaming;
+
+        let mut reader = response
+            .bytes_stream()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            .into_async_read();
+
+
+        let mut line_buf = Vec::new();
+        loop {
+            match reader.read_until(b'\n', &mut line_buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    let line_bytes = line_buf[..n].to_vec();
+                    line_buf.clear();
+                    let line = String::from_utf8_lossy(&line_bytes);
+
+                    // 解析 SSE 行
+                    if let Some(data) = parse_sse_line(&line) {
+                        if data == "[DONE]" {
+                            break;
+                        }
+
+
+                        // 解析 MiniMax 流式事件
+                        if let Ok(event) = serde_json::from_str::<MiniMaxStreamEvent>(&data) {
+                            if let Some(choices) = event.choices {
+                                for choice in choices {
+                                    if let Some(content) = choice.delta.content {
+                                        accumulator.add_content(&content);
+                                    }
+                                }
+                            }
+
+                            // 更新 token 统计
+                            if let Some(usage) = event.usage {
+                                if let Some(tokens) = usage.total_tokens {
+                                    accumulator.set_tokens(tokens);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    state = StreamingState::Error(err_msg);
+                    break;
+                }
+            }
+        }
+
+        accumulator.finish();
+        state = StreamingState::Completed;
+
+
+        Ok((accumulator, state))
+    }
+
     /// 调用模型（单轮 prompt 格式，兼容旧接口）
     #[allow(unused)]
     async fn call_model(&self, prompt: &str) -> Result<String, AgentError> {
@@ -542,7 +655,49 @@ impl Agent {
 
 /// 聊天消息结构（用于 Anthropic Messages API）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+
+/// MiniMax SSE 行解析
+fn parse_sse_line(line: &str) -> Option<String> {
+    if line.starts_with("data:") {
+        Some(line[5..].trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// MiniMax 流式响应事件解析
+#[derive(Debug, Deserialize, Default)]
+struct MiniMaxStreamEvent {
+    id: Option<String>,
+    choices: Option<Vec<MiniMaxStreamChoice>>,
+    #[serde(default)]
+    usage: Option<Usage>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct MiniMaxStreamChoice {
+    #[serde(default)]
+    delta: MiniMaxDelta,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+
+#[derive(Debug, Deserialize, Default)]
+struct MiniMaxDelta {
+    #[serde(default)]
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct Usage {
+    #[serde(rename = "completion_tokens", default)]
+    completion_tokens: Option<usize>,
+    #[serde(rename = "total_tokens", default)]
+    total_tokens: Option<usize>,
 }

@@ -209,6 +209,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dirs",
+ "futures-util",
  "mockito",
  "once_cell",
  "regex",
