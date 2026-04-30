@@ -10,11 +10,11 @@
 use super::{MessageRole, Session, SessionMessage};
 
 /// 最大保留消息对数（每个完整交换周期算1对）
-const MAX_RECENT_CYCLES: usize = 2;
-/// 触发压缩的字符阈值
-const CHAR_THRESHOLD: usize = 12_000;
+const MAX_RECENT_CYCLES: usize = 3;
+/// 触发压缩的字符阈值（上下文超过此值触发压缩）
+const CHAR_THRESHOLD: usize = 15_000;
 /// 触发压缩的消息对数阈值（每对约2-4条消息）
-const PAIR_THRESHOLD: usize = 4;
+const PAIR_THRESHOLD: usize = 8;
 
 /// 代表一个完整的"用户→助手→(工具→助手)"交换周期
 #[derive(Debug, Clone)]

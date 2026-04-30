@@ -1,5 +1,11 @@
 //! Agent 核心模块
 //! 实现自主编程助手的大脑 - 推理循环和任务执行
+//! 
+//! 特性：
+//! - 多轮对话上下文（真正的历史消息）
+//! - Anthropic Messages API 格式
+//! - 自动上下文压缩
+//! - Fork 子Agent 支持（框架已就绪）
 
 #[allow(unused)]
 pub mod fork;
@@ -105,6 +111,8 @@ pub enum AgentError {
     SessionNotFound(uuid::Uuid),
     #[error("Model API error: {0}")]
     ModelError(String),
+    #[error("Context too long: {0}")]
+    ContextTooLong(usize),
 }
 
 /// Agent 主模块
@@ -127,13 +135,13 @@ impl Agent {
         }
     }
 
-    /// 处理用户消息并生成响应
+    /// 处理用户消息并生成响应（多轮对话版本）
     pub async fn process_message(
         &self,
         session_id: uuid::Uuid,
         message: String,
     ) -> Result<AgentResponse, AgentError> {
-        // 先检查是否需要压缩（只读，不需要锁）
+        // 检查是否需要压缩
         let should_compact = {
             let manager = self.sessions.read().await;
             manager
@@ -142,17 +150,15 @@ impl Agent {
                 .unwrap_or(false)
         };
 
-        // 获取 tool_results（需要 &mut session）
+        // 获取 tool_results 并添加用户消息
         let tool_results = {
             let mut manager = self.sessions.write().await;
             let session = manager
                 .get_session_mut(&session_id)
                 .ok_or(AgentError::SessionNotFound(session_id))?;
 
-            // 添加用户消息
             session.add_message(MessageRole::User, message.clone());
 
-            // 如果之前检测到需要压缩，则执行压缩
             if should_compact {
                 crate::session::memory::compact_session(session);
             }
@@ -160,7 +166,7 @@ impl Agent {
             session.drain_tool_results()
         };
 
-        // 获取 session 克隆（用于构建 prompt）
+        // 获取 session 用于构建消息历史
         let session = {
             let manager = self.sessions.read().await;
             manager
@@ -169,11 +175,14 @@ impl Agent {
                 .clone()
         };
 
-        // 构建 prompt
-        let prompt = self.build_prompt(&session, tool_results);
+        // 构建 Anthropic 格式的消息列表
+        let messages = self.build_messages(&session, tool_results);
 
-        // 调用模型
-        let response = self.call_model(&prompt).await?;
+        // 调用模型（多轮对话格式）
+        let response_text = self.call_model_multi_turn(&messages).await?;
+
+        // 解析响应中的工具调用
+        let (text, tool_calls) = self.parse_response(&response_text);
 
         // 更新 session
         {
@@ -182,9 +191,6 @@ impl Agent {
                 .get_session_mut(&session_id)
                 .ok_or(AgentError::SessionNotFound(session_id))?;
 
-            // 解析响应中的工具调用
-            let (text, tool_calls) = self.parse_response(&response);
-
             session.add_message(MessageRole::Assistant, text.clone());
 
             if !tool_calls.is_empty() {
@@ -192,130 +198,161 @@ impl Agent {
             } else {
                 session.set_state(SessionState::Completed);
             }
-
-            Ok(AgentResponse {
-                content: text,
-                tool_calls,
-                session_id,
-                state: session.state,
-            })
         }
+
+        Ok(AgentResponse {
+            content: text,
+            tool_calls,
+            session_id,
+            state: SessionState::Idle,
+        })
     }
 
-    /// 添加工具结果到 session（已被 process_message 整合，此方法保留备用）
-    #[allow(dead_code)]
-    pub async fn add_tool_result(
+    /// 构建 Anthropic Messages API 格式的消息列表
+    fn build_messages(
         &self,
-        session_id: uuid::Uuid,
-        tool_call_id: &str,
-        tool_name: &str,
-        result: String,
-        is_error: bool,
-    ) -> Result<AgentResponse, AgentError> {
-        {
-            let mut manager = self.sessions.write().await;
-            let session = manager
-                .get_session_mut(&session_id)
-                .ok_or(AgentError::SessionNotFound(session_id))?;
+        session: &Session,
+        tool_results: Vec<crate::session::SimpleToolResult>,
+    ) -> Vec<ChatMessage> {
+        let mut messages = Vec::new();
 
-            session.add_tool_result(tool_call_id, result.clone(), is_error);
-            session.add_message(
-                MessageRole::Tool,
-                format!(
-                    "[{}] 结果: {}",
-                    tool_name,
-                    if is_error {
-                        format!("错误: {}", result)
-                    } else {
-                        result
+        // 系统消息（作为第一条消息）
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: self.config.system_prompt.clone(),
+        });
+
+        // 对话历史
+        for msg in &session.messages {
+            if msg.role == MessageRole::System {
+                continue; // 系统消息已在上面处理
+            }
+            let role_str = match msg.role {
+                MessageRole::User => "user",
+                MessageRole::Assistant => "assistant",
+                MessageRole::Tool => "user", // 工具结果作为用户消息
+                MessageRole::System => continue,
+            };
+
+            let mut content = msg.content.clone();
+
+            // 如果有工具调用，附加到内容
+            if let Some(ref calls) = msg.tool_calls {
+                for tc in calls {
+                    if let Ok(args_json) = serde_json::to_string(&tc.arguments) {
+                        content.push_str(&format!(
+                            "\n[TOOL_CALL: {{\"name\": \"{}\", \"arguments\": {}}}]",
+                            tc.name, args_json
+                        ));
                     }
-                ),
-            );
-            session.set_state(SessionState::Executing);
-        }
-
-        // 继续推理
-        let session = {
-            let manager = self.sessions.read().await;
-            manager
-                .get_session(&session_id)
-                .ok_or(AgentError::SessionNotFound(session_id))?
-                .clone()
-        };
-
-        let prompt = self.build_prompt(&session, vec![]);
-        let response = self.call_model(&prompt).await?;
-
-        let (text, tool_calls) = self.parse_response(&response);
-
-        {
-            let mut manager = self.sessions.write().await;
-            let session = manager
-                .get_session_mut(&session_id)
-                .ok_or(AgentError::SessionNotFound(session_id))?;
-
-            session.add_message(MessageRole::Assistant, text.clone());
-
-            if !tool_calls.is_empty() {
-                session.set_state(SessionState::WaitingTool);
-            } else {
-                session.set_state(SessionState::Completed);
+                }
             }
 
-            Ok(AgentResponse {
-                content: text,
-                tool_calls,
-                session_id,
-                state: session.state,
-            })
-        }
-    }
-
-    /// 构建发送给模型的 prompt
-    fn build_prompt(&self, session: &Session, tool_results: Vec<crate::session::SimpleToolResult>) -> String {
-        let mut prompt = format!(
-            "{}\n\n## 当前会话\n\n工作目录: {}\n\n## 对话历史:\n",
-            self.config.system_prompt,
-            session.cwd.display()
-        );
-
-        for msg in &session.messages {
-            let role_str = match msg.role {
-                MessageRole::User => "用户",
-                MessageRole::Assistant => "助手",
-                MessageRole::System => "系统",
-                MessageRole::Tool => "工具",
-            };
-            prompt.push_str(&format!("\n[{}]\n{}\n", role_str, msg.content));
+            messages.push(ChatMessage {
+                role: role_str.to_string(),
+                content,
+            });
         }
 
-        // 工具执行结果（来自 OpenClaw 执行后反馈）
+        // 添加工具执行结果（如果有）
         if !tool_results.is_empty() {
-            prompt.push_str("\n## 工具执行结果:\n");
+            let mut results_text = String::from("\n## 工具执行结果:\n");
             for result in &tool_results {
                 let prefix = if result.is_error { "错误" } else { "结果" };
-                prompt.push_str(&format!("[{}] {}: {}\n", result.tool, prefix, result.result));
+                results_text.push_str(&format!(
+                    "- [{}] {}: {}\n",
+                    result.tool, prefix, result.result
+                ));
             }
-        }
-        // 旧的 tool_results (by ID)
-        if !session.tool_results.is_empty() {
-            prompt.push_str("\n## 待处理工具结果:\n");
-            for (id, result) in &session.tool_results {
-                prompt.push_str(&format!("- {}: {}\n", id, result.content));
-            }
+            results_text.push_str("\n请继续完成任务或调用下一个工具：");
+
+            messages.push(ChatMessage {
+                role: "user".to_string(),
+                content: results_text,
+            });
         }
 
-        prompt.push_str("\n\n请继续完成任务或调用工具:");
-        prompt
+        messages
     }
 
-    /// 调用模型 API
-    async fn call_model(&self, prompt: &str) -> Result<String, AgentError> {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/cc_timing.log") {
-            use std::io::Write;
-            writeln!(&mut f, "[{}] START len={}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(), prompt.len()).ok();
+    /// 调用模型（多轮对话格式，Anthropic Messages API）
+    async fn call_model_multi_turn(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<String, AgentError> {
+        // 检查上下文长度
+        let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+        const MAX_CONTEXT: usize = 100_000;
+        if total_chars > MAX_CONTEXT {
+            return Err(AgentError::ContextTooLong(total_chars));
         }
-        // Anthropic Messages API 格式
+
+        #[derive(Serialize)]
+        struct ChatRequest<'a> {
+            model: &'a str,
+            messages: &'a [ChatMessage],
+            max_tokens: u32,
+        }
+
+        #[derive(Deserialize)]
+        struct ChatResponse {
+            choices: Vec<ChatChoice>,
+        }
+
+        #[derive(Deserialize)]
+        struct ChatChoice {
+            message: ChatMessageContent,
+        }
+
+        #[derive(Deserialize)]
+        struct ChatMessageContent {
+            content: String,
+        }
+
+        let request = ChatRequest {
+            model: &self.config.model_name,
+            messages,
+            max_tokens: self.config.max_output_tokens,
+        };
+
+        let response = self
+            .http_client
+            .post(&self.config.model_url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .timeout(std::time::Duration::from_secs(120))
+            .send()
+            .await
+            .map_err(|e| AgentError::ModelError(e.to_string()))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AgentError::ModelError(format!(
+                "HTTP {}: {}",
+                status.as_u16(),
+                body
+            )));
+        }
+
+        let chat_response: ChatResponse = response
+            .json()
+            .await
+            .map_err(|e| AgentError::ModelError(e.to_string()))?;
+
+        let text = chat_response
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .unwrap_or_default();
+
+        Ok(text)
+    }
+
+    /// 调用模型（单轮 prompt 格式，兼容旧接口）
+    #[allow(unused)]
+    async fn call_model(&self, prompt: &str) -> Result<String, AgentError> {
         #[derive(Serialize)]
         struct ChatRequest {
             model: String,
@@ -379,23 +416,14 @@ impl Agent {
             .await
             .map_err(|e| AgentError::ModelError(e.to_string()))?;
 
-        let text = chat_response
+        Ok(chat_response
             .choices
             .first()
             .map(|c| c.message.content.clone())
-            .unwrap_or_default();
-
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/cc_timing.log") {
-            use std::io::Write;
-            writeln!(&mut f, "[{}] END len={}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(), text.len()).ok();
-        }
-
-        Ok(text)
+            .unwrap_or_default())
     }
 
     /// 解析模型响应，提取文本和工具调用
-    /// 格式: [TOOL_CALL:{"name":"tool_name","arguments":{...}}]
-    /// 使用括号平衡算法，支持任意层级的嵌套 JSON
     fn parse_response(&self, response: &str) -> (String, Vec<ToolCallRequest>) {
         let mut text = String::new();
         let mut tool_calls = Vec::new();
@@ -434,14 +462,12 @@ impl Agent {
             }
 
             if depth != 0 {
-                // 没找到匹配的括号，当作不是工具调用
                 search_start = brace_start + 1;
                 continue;
             }
 
             let json_str = &response[brace_start..=json_end];
 
-            // 解析工具调用
             if let Ok(tool_call) = serde_json::from_str::<serde_json::Value>(json_str) {
                 let id = uuid::Uuid::new_v4().to_string();
                 let name = tool_call
@@ -459,7 +485,6 @@ impl Agent {
                 tool_calls.push(ToolCallRequest { id, name, arguments });
             }
 
-            // 跳过整个 [TOOL_CALL:...] 标签
             if let Some(close_bracket) = response[json_end..].find(']') {
                 search_start = json_end + close_bracket + 1;
             } else {
@@ -467,7 +492,6 @@ impl Agent {
             }
         }
 
-        // 累积剩余文本
         text.push_str(&response[search_start..]);
 
         // 如果没有内联格式，尝试 markdown ```tool 块
@@ -514,4 +538,11 @@ impl Agent {
 
         (text.trim().to_string(), tool_calls)
     }
+}
+
+/// 聊天消息结构（用于 Anthropic Messages API）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
 }
