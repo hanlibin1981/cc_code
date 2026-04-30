@@ -47,6 +47,9 @@ once_cell = "1"
 dirs = "5"
 futures-util = "0.3.32"
 
+# SQLite for session persistence
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 
 [dev-dependencies]
 tokio-test = "0.4"

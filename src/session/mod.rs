@@ -2,6 +2,8 @@
 //! 管理编程会话的生命周期和状态
 
 pub mod memory;
+#[cfg(feature = "persistence")]
+pub mod persistence;
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
