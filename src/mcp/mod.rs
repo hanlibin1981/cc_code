@@ -1,6 +1,12 @@
 //! MCP 协议处理模块
 //! 实现 JSON-RPC 2.0 协议 + MCP 扩展
 
+pub mod protocol;
+pub mod server;
+
+pub use protocol::*;
+pub use server::*;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
