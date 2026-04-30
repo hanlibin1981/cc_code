@@ -211,6 +211,99 @@ impl Agent {
         })
     }
 
+    /// 处理用户消息并生成流式响应
+    /// 返回一个包含内容片段和工具调用的累积响应
+    pub async fn process_message_streaming(
+        &self,
+        session_id: uuid::Uuid,
+        message: String,
+    ) -> Result<(String, Vec<ToolCallRequest>), AgentError> {
+        // 检查是否需要压缩
+        let should_compact = {
+            let manager = self.sessions.read().await;
+            manager
+                .get_session(&session_id)
+                .map(crate::session::memory::needs_compaction)
+                .unwrap_or(false)
+        };
+
+        // 获取 tool_results 并添加用户消息
+        let tool_results = {
+            let mut manager = self.sessions.write().await;
+            let session = manager
+                .get_session_mut(&session_id)
+                .ok_or(AgentError::SessionNotFound(session_id))?;
+
+            session.add_message(MessageRole::User, message.clone());
+
+            if should_compact {
+                crate::session::memory::compact_session(session);
+            }
+
+            session.drain_tool_results()
+        };
+
+        // 获取 session 用于构建消息历史
+        let session = {
+            let manager = self.sessions.read().await;
+            manager
+                .get_session(&session_id)
+                .ok_or(AgentError::SessionNotFound(session_id))?
+                .clone()
+        };
+
+        // 构建 Anthropic 格式的消息列表
+        let messages = self.build_messages(&session, tool_results);
+
+        // 使用流式配置
+        let streaming_config = StreamingConfig::default();
+
+        // 调用模型（流式版本）
+        let (accumulator, _state) = self
+            .call_model_streaming(&messages, &streaming_config)
+            .await?;
+
+        let result = accumulator.get_result();
+
+        // 解析响应中的工具调用
+        let tool_calls: Vec<ToolCallRequest> = result
+            .tool_calls
+            .into_iter()
+            .filter_map(|tc| {
+                let name = tc.get("name")?.as_str()?.to_string();
+                let arguments: std::collections::HashMap<String, serde_json::Value> = tc
+                    .get("arguments")?
+                    .as_object()?
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                Some(ToolCallRequest {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    name,
+                    arguments,
+                })
+            })
+            .collect();
+
+        // 更新 session
+        {
+            let mut manager = self.sessions.write().await;
+            let session = manager
+                .get_session_mut(&session_id)
+                .ok_or(AgentError::SessionNotFound(session_id))?;
+
+            session.add_message(MessageRole::Assistant, result.content.clone());
+
+            if !tool_calls.is_empty() {
+                session.set_state(SessionState::WaitingTool);
+            } else {
+                session.set_state(SessionState::Completed);
+            }
+        }
+
+        Ok((result.content, tool_calls))
+    }
+
     /// 构建 Anthropic Messages API 格式的消息列表
     fn build_messages(
         &self,

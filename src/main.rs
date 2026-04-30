@@ -354,6 +354,75 @@ async fn handle_tool_call(input: &CallToolInput, state: &ServerState) -> CallToo
             }
         }
 
+        // 流式消息处理（使用流式 API）
+        "cc_stream_message" => {
+            let session_id = args
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok());
+            let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            let tool_results = args.get("tool_results").and_then(|v| v.as_array());
+
+            if let Some(id) = session_id {
+                // 如果有工具执行结果，先注入到 session
+                if let Some(results) = tool_results {
+                    let mut sm = state.session_manager.write().await;
+                    if let Some(session) = sm.get_session_mut(&id) {
+                        for result in results {
+                            if let (Some(tool), Some(content)) = (
+                                result.get("tool").and_then(|v| v.as_str()),
+                                result.get("result").and_then(|v| v.as_str()),
+                            ) {
+                                let is_error = result
+                                    .get("is_error")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                                session.add_simple_tool_result(
+                                    tool.to_string(),
+                                    content.to_string(),
+                                    is_error,
+                                );
+                            }
+                        }
+                    }
+                }
+
+                match state.agent.process_message_streaming(id, message.to_string()).await {
+                    Ok((text, tool_calls)) => {
+                        let mut output = text.clone();
+
+                        // 用结构化格式返回工具调用指令
+                        for tc in &tool_calls {
+                            let args_json =
+                                serde_json::to_string(&tc.arguments).unwrap_or_else(|_| "{}".to_string());
+                            output.push_str(&format!(
+                                "\n[TOOL_CALL: {{\"name\": \"{}\", \"arguments\": {}}} ]\n",
+                                tc.name, args_json
+                            ));
+                        }
+
+                        CallToolResult {
+                            content: vec![ContentBlock::Text { text: output }],
+                            is_error: Some(false),
+                        }
+                    }
+                    Err(e) => CallToolResult {
+                        content: vec![ContentBlock::Text {
+                            text: format!("流式处理失败: {}", e),
+                        }],
+                        is_error: Some(true),
+                    },
+                }
+            } else {
+                CallToolResult {
+                    content: vec![ContentBlock::Text {
+                        text: "缺少 session_id 参数".to_string(),
+                    }],
+                    is_error: Some(true),
+                }
+            }
+        }
+
         // 未知工具
         // 未知工具
         _ => {

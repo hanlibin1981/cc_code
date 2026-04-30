@@ -131,6 +131,40 @@ impl ToolRegistry {
             },
         });
 
+        // 流式消息工具
+        self.register(ToolDef {
+            name: "cc_stream_message".into(),
+            description: "流式版本的消息处理，使用流式 API 返回增量结果。响应中同样包含 [TOOL_CALL:...] 格式的工具调用。".into(),
+            input_schema: ToolInputSchema {
+                properties: {
+                    let mut props = HashMap::new();
+                    props.insert(
+                        "session_id".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("会话 ID".into()),
+                        },
+                    );
+                    props.insert(
+                        "message".to_string(),
+                        SchemaProperty {
+                            param_type: "string".into(),
+                            description: Some("任务描述或工具执行结果".into()),
+                        },
+                    );
+                    props.insert(
+                        "tool_results".to_string(),
+                        SchemaProperty {
+                            param_type: "array".into(),
+                            description: Some(r#"可选，上一轮工具执行结果数组 [{tool: "name", result: "..."}]"#.into()),
+                        },
+                    );
+                    props
+                },
+                required: vec!["session_id".to_string(), "message".to_string()],
+            },
+        });
+
         self.register(ToolDef {
             name: "cc_list_sessions".into(),
             description: "列出所有活跃会话".into(),
