@@ -4,6 +4,7 @@ use crate::tools::{ToolCall, ToolExecutionResult};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[allow(dead_code)]
 pub struct ToolExecutor {
     workspace: PathBuf,
     pub file_tool: crate::tools::FileTool,

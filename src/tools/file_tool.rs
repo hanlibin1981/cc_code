@@ -5,6 +5,7 @@ use std::path::Path;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 
+#[allow(dead_code)]
 pub struct FileTool {
     max_file_size: usize,
 }

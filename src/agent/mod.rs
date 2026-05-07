@@ -13,8 +13,9 @@ pub mod fork;
 pub mod coordinator;
 pub mod streaming;
 
+use crate::config::ResolvedModelConfig;
 use crate::session::{MessageRole, Session, SessionManager, SessionState};
-use crate::agent::streaming::{StreamingAccumulator, StreamingConfig, StreamingState};
+use crate::agent::streaming::{StreamingAccumulator, StreamingConfig, StreamingState, DeepSeekStreamEvent};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -27,8 +28,10 @@ pub struct AgentConfig {
     pub model_url: String,
     /// API Key
     pub api_key: String,
-    /// 模型名称
-    pub model_name: String,
+    /// 模型引用（如 "deepseek/deepseek-v4-pro"）
+    pub model_ref: String,
+    /// 模型 ID（不含 provider 前缀）
+    pub model_id: String,
     /// 系统提示词
     pub system_prompt: String,
     /// 最大输出 tokens
@@ -38,17 +41,36 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            model_url: "https://api.minimaxi.com/v1/text/chatcompletion_v2".into(),
-            api_key: std::env::var("MINIMAX_API_KEY").unwrap_or_default(),
-            model_name: "MiniMax-M2".into(),
+            model_url: "https://api.deepseek.com/v1/chat/completions".into(),
+            api_key: std::env::var("DEEPSEEK_API_KEY").unwrap_or_default(),
+            model_ref: "deepseek/deepseek-v4-pro".into(),
+            model_id: "deepseek-v4-pro".into(),
             system_prompt: SYSTEM_PROMPT.into(),
             max_output_tokens: 8192,
         }
     }
 }
 
+impl AgentConfig {
+    /// 从 OpenClaw 配置加载
+    pub fn from_openclaw_config(
+        resolved: &ResolvedModelConfig,
+        model_ref: &str,
+        system_prompt: Option<String>,
+    ) -> Self {
+        Self {
+            model_url: format!("{}/v1/chat/completions", resolved.base_url.trim_end_matches('/')),
+            api_key: resolved.api_key.clone(),
+            model_ref: model_ref.to_string(),
+            model_id: resolved.model_id.clone(),
+            system_prompt: system_prompt.unwrap_or_else(|| SYSTEM_PROMPT.into()),
+            max_output_tokens: resolved.max_tokens,
+        }
+    }
+}
+
 /// 系统提示词
-const SYSTEM_PROMPT: &str = r#"你是 cc_code，一个专业的 AI 编程助手，基于 MiniMax M2 模型驱动。
+const SYSTEM_PROMPT: &str = r#"你是 cc_code，一个专业的 AI 编程助手，基于 DeepSeek V4 Pro 模型驱动。
 
 你的职责：
 1. 理解用户的编程任务需求
@@ -406,7 +428,7 @@ impl Agent {
         }
 
         let request = ChatRequest {
-            model: &self.config.model_name,
+            model: &self.config.model_id,
             messages,
             max_tokens: self.config.max_output_tokens,
         };
@@ -451,7 +473,7 @@ impl Agent {
     pub async fn call_model_streaming(
         &self,
         messages: &[ChatMessage],
-        config: &StreamingConfig,
+        _config: &StreamingConfig,
     ) -> Result<(StreamingAccumulator, StreamingState), AgentError> {
         // 检查上下文长度
         let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
@@ -469,7 +491,7 @@ impl Agent {
 
 
         let request = StreamRequest {
-            model: &self.config.model_name,
+            model: &self.config.model_id,
             messages,
             max_tokens: self.config.max_output_tokens,
         };
@@ -498,7 +520,6 @@ impl Agent {
 
         // 流式读取响应
         let mut accumulator = StreamingAccumulator::new();
-        let mut state = StreamingState::Streaming;
 
         let mut reader = response
             .bytes_stream()
@@ -522,8 +543,8 @@ impl Agent {
                         }
 
 
-                        // 解析 MiniMax 流式事件
-                        if let Ok(event) = serde_json::from_str::<MiniMaxStreamEvent>(&data) {
+                        // 解析 DeepSeek 流式事件
+                        if let Ok(event) = serde_json::from_str::<DeepSeekStreamEvent>(&data) {
                             if let Some(choices) = event.choices {
                                 for choice in choices {
                                     if let Some(content) = choice.delta.content {
@@ -543,17 +564,14 @@ impl Agent {
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
-                    state = StreamingState::Error(err_msg);
-                    break;
+                    accumulator.finish();
+                    return Ok((accumulator, StreamingState::Error(err_msg)));
                 }
             }
         }
 
         accumulator.finish();
-        state = StreamingState::Completed;
-
-
-        Ok((accumulator, state))
+        Ok((accumulator, StreamingState::Completed))
     }
 
     /// 调用模型（单轮 prompt 格式，兼容旧接口）
@@ -588,7 +606,7 @@ impl Agent {
         }
 
         let request = ChatRequest {
-            model: self.config.model_name.clone(),
+            model: self.config.model_id.clone(),
             messages: vec![ChatMessage {
                 role: "user".into(),
                 content: prompt.into(),
@@ -754,7 +772,7 @@ pub struct ChatMessage {
 }
 
 
-/// MiniMax SSE 行解析
+/// DeepSeek SSE 行解析
 fn parse_sse_line(line: &str) -> Option<String> {
     if line.starts_with("data:") {
         Some(line[5..].trim().to_string())
@@ -763,34 +781,3 @@ fn parse_sse_line(line: &str) -> Option<String> {
     }
 }
 
-/// MiniMax 流式响应事件解析
-#[derive(Debug, Deserialize, Default)]
-struct MiniMaxStreamEvent {
-    id: Option<String>,
-    choices: Option<Vec<MiniMaxStreamChoice>>,
-    #[serde(default)]
-    usage: Option<Usage>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct MiniMaxStreamChoice {
-    #[serde(default)]
-    delta: MiniMaxDelta,
-    #[serde(default)]
-    finish_reason: Option<String>,
-}
-
-
-#[derive(Debug, Deserialize, Default)]
-struct MiniMaxDelta {
-    #[serde(default)]
-    content: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct Usage {
-    #[serde(rename = "completion_tokens", default)]
-    completion_tokens: Option<usize>,
-    #[serde(rename = "total_tokens", default)]
-    total_tokens: Option<usize>,
-}

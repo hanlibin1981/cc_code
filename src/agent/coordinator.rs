@@ -1,6 +1,6 @@
 //! Coordinator 多Agent编排
 //! 参考 Claude Code 的 coordinatorMode.ts
-//! 
+//!
 //! 特性：
 //! - 研究阶段：worker 并行探索（只读）
 //! - 综合阶段：coordinator 汇总发现

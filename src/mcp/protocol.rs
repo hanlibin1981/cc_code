@@ -22,6 +22,7 @@ pub mod methods {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
     pub id: Value,
@@ -31,6 +32,7 @@ pub struct JsonRpcRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct JsonRpcResponse {
     pub jsonrpc: String,
     pub id: Value,
@@ -41,6 +43,7 @@ pub struct JsonRpcResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct JsonRpcError {
     pub code: i32,
     pub message: String,
@@ -101,6 +104,7 @@ pub fn parse_request(line: &str) -> Result<JsonRpcRequest, JsonRpcError> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct ToolCallResult {
     pub content: Vec<ToolCallContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -108,6 +112,7 @@ pub struct ToolCallResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct ToolCallContent {
     #[serde(rename = "type")]
     pub content_type: String,
@@ -137,6 +142,7 @@ impl ToolCallResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct ServerCapabilities {
     #[serde(rename = "protocolVersion")]
     pub protocol_version: String,

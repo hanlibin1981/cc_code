@@ -9,12 +9,14 @@ pub struct EditTool {
 }
 
 impl EditTool {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             max_file_size: 5 * 1024 * 1024, // 5MB
         }
     }
 
+    #[allow(dead_code)]
     pub async fn edit_file(&self, path: &str, old_text: &str, new_text: &str) -> ToolExecutionResult {
         let path = Path::new(path);
         if !self.is_safe_path(path) {
@@ -50,6 +52,7 @@ impl EditTool {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn append_to_file(&self, path: &str, content: &str) -> ToolExecutionResult {
         let path = Path::new(path);
         if !self.is_safe_path(path) {
@@ -65,6 +68,7 @@ impl EditTool {
         }
     }
 
+    #[allow(dead_code)]
     fn is_safe_path(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
         if path_str.contains("..") {
@@ -86,6 +90,7 @@ impl Default for EditTool {
     }
 }
 
+#[allow(dead_code)]
 fn truncate(text: &str, max_len: usize) -> String {
     if text.len() <= max_len {
         text.to_string()

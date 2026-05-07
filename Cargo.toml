@@ -6,6 +6,9 @@ rust-version = "1.81"
 description = "OpenClaw 编程开发助手 - MCP 服务器"
 authors = ["cc_code team"]
 
+[features]
+persistence = []
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }

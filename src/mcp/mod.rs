@@ -4,8 +4,6 @@
 pub mod protocol;
 pub mod server;
 
-pub use protocol::*;
-pub use server::*;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,6 +11,7 @@ use std::collections::HashMap;
 
 /// JSON-RPC 2.0 请求
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct JsonRpcRequest {
     #[allow(unused)] pub jsonrpc: String,
     pub id: Option<Value>,
@@ -23,6 +22,7 @@ pub struct JsonRpcRequest {
 
 /// JSON-RPC 2.0 响应
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct JsonRpcResponse {
     #[allow(unused)] pub jsonrpc: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,6 +58,7 @@ impl JsonRpcResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct JsonRpcError {
     pub code: i32,
     pub message: String,
@@ -98,17 +99,20 @@ pub struct ServerCapabilities {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct ToolsCapability {
     pub list_changed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct ResourcesCapability {
     pub subscribe: bool,
     pub list_changed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct PromptsCapability {
     pub list_changed: bool,
 }

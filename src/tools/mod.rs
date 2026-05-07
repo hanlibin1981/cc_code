@@ -5,7 +5,7 @@ pub mod file_tool;
 pub mod bash_tool;
 pub mod edit_tool;
 
-pub use executor::{ToolExecutor, parse_tool_calls};
+pub use executor::ToolExecutor;
 pub use file_tool::FileTool;
 pub use bash_tool::BashTool;
 pub use edit_tool::EditTool;

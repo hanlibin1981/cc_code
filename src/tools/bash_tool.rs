@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+#[allow(dead_code)]
 pub struct BashTool {
     dangerous_commands: HashSet<&'static str>,
     allowed_commands: Option<HashSet<&'static str>>,

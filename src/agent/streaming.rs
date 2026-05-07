@@ -170,7 +170,7 @@ pub struct StreamingResult {
     pub total_tokens: usize,
 }
 
-/// MiniMax SSE 行解析
+/// DeepSeek SSE 行解析
 pub fn parse_sse_line(line: &str) -> Option<String> {
     if line.starts_with("data:") {
         Some(line[5..].trim().to_string())
@@ -179,27 +179,36 @@ pub fn parse_sse_line(line: &str) -> Option<String> {
     }
 }
 
-/// MiniMax 流式响应事件解析
+/// DeepSeek 流式响应事件解析
 #[derive(Debug, Deserialize, Default)]
-struct MiniMaxStreamEvent {
-    id: Option<String>,
-    choices: Option<Vec<MiniMaxStreamChoice>>,
+pub struct DeepSeekStreamEvent {
+    pub id: Option<String>,
+    pub choices: Option<Vec<DeepSeekStreamChoice>>,
     #[serde(default)]
-    usage: Option<Usage>,
+    pub usage: Option<StreamUsage>,
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct MiniMaxStreamChoice {
+pub struct DeepSeekStreamChoice {
     #[serde(default)]
-    delta: MiniMaxDelta,
+    pub delta: DeepSeekDelta,
     #[serde(default)]
-    finish_reason: Option<String>,
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct MiniMaxDelta {
+pub struct DeepSeekDelta {
     #[serde(default)]
-    content: Option<String>,
+    pub content: Option<String>,
+}
+
+/// DeepSeek API Usage (stream)
+#[derive(Debug, Deserialize, Default)]
+pub struct StreamUsage {
+    #[serde(rename = "completion_tokens", default)]
+    pub completion_tokens: Option<usize>,
+    #[serde(rename = "total_tokens", default)]
+    pub total_tokens: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -212,6 +221,7 @@ struct Usage {
 
 /// 进度通知
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ProgressNotification {
     pub progress: f32,
     pub message: String,

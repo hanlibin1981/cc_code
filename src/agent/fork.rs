@@ -503,17 +503,20 @@ mod tests {
         };
         let manager = manager.with_config(config);
 
-        manager.create_fork("parent".to_string(), None, None).await;
-        manager.create_fork("parent".to_string(), None, None).await;
+        // Spawn first fork → active count = 1
+        let fork1 = manager.create_fork("parent".to_string(), None, None).await;
+        manager.spawn_fork(fork1.id.clone(), "prompt 1".to_string()).await.unwrap();
 
-        assert_eq!(manager.get_active_fork_count().await, 0);
+        // Spawn second fork → active count = 2
+        let fork2 = manager.create_fork("parent".to_string(), None, None).await;
+        manager.spawn_fork(fork2.id.clone(), "prompt 2".to_string()).await.unwrap();
 
-        // 第三次应该失败（达到上限）
-        let result = manager.spawn_fork(
-            manager.create_fork("parent".to_string(), None, None).await.id,
-            "prompt".to_string(),
-        ).await;
-        
+        assert_eq!(manager.get_active_fork_count().await, 2);
+
+        // Third spawn should fail (max 2 parallel)
+        let fork3 = manager.create_fork("parent".to_string(), None, None).await;
+        let result = manager.spawn_fork(fork3.id.clone(), "prompt 3".to_string()).await;
+
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Maximum"));
     }

@@ -389,21 +389,56 @@ mod tests {
         let mut session = Session::new(std::path::PathBuf::from("/tmp"));
         // 添加足够多的消息以超过12K字符阈值
         let long_content = "x".repeat(700);
-        for i in 0..20 {
+        for i in 0..22 {
             session.add_message(MessageRole::User, format!("{}{}", long_content, i));
         }
         
-        // 20条 * 700+ chars 应该触发压缩
+        // 22条 * ~703 chars ≈ 15.5K > CHAR_THRESHOLD 15K → 触发压缩
         assert!(needs_compaction(&session));
     }
 
     #[test]
     fn test_truncate_long_tool_content() {
-        let long_content = "a".repeat(1000);
-        assert!(should_truncate_content(&long_content, MessageRole::Tool));
-        assert!(should_truncate_content(&long_content, MessageRole::User));
-        
+        use chrono::Utc;
+        let long_content = "a".repeat(1600);
         let short_content = "short";
-        assert!(!should_truncate_content(short_content, MessageRole::User));
+
+        let tool_msg = SessionMessage {
+            role: MessageRole::Tool,
+            content: long_content.clone(),
+            tool_calls: None,
+            timestamp: Utc::now(),
+        };
+        // User messages are never truncated
+        let user_msg = SessionMessage {
+            role: MessageRole::User,
+            content: long_content.clone(),
+            tool_calls: None,
+            timestamp: Utc::now(),
+        };
+        // Assistant messages with tool_calls are never truncated
+        let assistant_with_tool = SessionMessage {
+            role: MessageRole::Assistant,
+            content: long_content.clone(),
+            tool_calls: Some(vec![super::super::ToolCall {
+                id: "tc1".to_string(),
+                name: "test".to_string(),
+                arguments: std::collections::HashMap::new(),
+            }]),
+            timestamp: Utc::now(),
+        };
+        // Assistant messages without tool_calls and >1500 chars are truncated
+        let assistant_long = SessionMessage {
+            role: MessageRole::Assistant,
+            content: long_content.clone(),
+            tool_calls: None,
+            timestamp: Utc::now(),
+        };
+
+        assert!(should_truncate_content(&long_content, MessageRole::Tool, &tool_msg)); // Tool > 800 chars → truncate
+        assert!(!should_truncate_content(&long_content, MessageRole::User, &user_msg)); // User → never truncate
+        assert!(!should_truncate_content(short_content, MessageRole::User, &user_msg)); // User short → never truncate
+        assert!(!should_truncate_content(&long_content, MessageRole::Assistant, &assistant_with_tool)); // Has tool_calls → never truncate
+        assert!(should_truncate_content(&long_content, MessageRole::Assistant, &assistant_long)); // No tool_calls, >1500 chars → truncate
     }
 }

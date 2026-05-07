@@ -1,7 +1,7 @@
 //! MCP 服务器模块
 
 use crate::mcp::protocol::{
-    self, methods, success_response, error_response, JsonRpcRequest, JsonRpcResponse, JsonRpcError,
+    methods, success_response, error_response, JsonRpcRequest, JsonRpcResponse, JsonRpcError,
     ToolCallResult, ServerCapabilities,
 };
 use crate::tools::{ToolExecutor, ToolRegistry, ToolCall};
@@ -72,6 +72,7 @@ impl McpServer {
                 });
                 success_response(id, resources)
             }
+            #[allow(unreachable_patterns)]
             _ => {
                 warn!("Unknown method: {}", request.method);
                 error_response(id, JsonRpcError::method_not_found())
@@ -118,7 +119,7 @@ impl McpServer {
 }
 
 pub async fn process_message(server: &McpServer, message: &str) -> Option<String> {
-    let request = match method::parse_request(message) {
+    let request = match crate::mcp::protocol::parse_request(message) {
         Ok(r) => r,
         Err(e) => {
             let response = error_response(serde_json::Value::Null, e);
@@ -130,14 +131,3 @@ pub async fn process_message(server: &McpServer, message: &str) -> Option<String
     serde_json::to_string(&response).ok()
 }
 
-mod method {
-    use crate::mcp::protocol::{JsonRpcRequest, JsonRpcError, methods};
-    
-    pub fn parse_request(line: &str) -> Result<JsonRpcRequest, JsonRpcError> {
-        serde_json::from_str(line).map_err(|_| JsonRpcError {
-            code: -32700,
-            message: "Parse error".into(),
-            data: None,
-        })
-    }
-}

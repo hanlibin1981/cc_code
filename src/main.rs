@@ -1,12 +1,15 @@
+#![allow(dead_code)]
 //! cc_code - OpenClaw 编程开发助手
 //! MCP 服务器入口
 
 mod agent;
+mod config;
 mod mcp;
 mod session;
 mod tools;
 
 use agent::{Agent, AgentConfig};
+use config::OpenClawConfig;
 use mcp::{
     CallToolInput, CallToolResult, ContentBlock, JsonRpcRequest, JsonRpcResponse, ListToolsResult,
     ServerCapabilities, Tool,
@@ -18,6 +21,58 @@ use tokio::runtime::Runtime;
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
+
+/// 命令行参数
+#[derive(Debug, Default)]
+struct CliArgs {
+    model_ref: Option<String>,  // 可选：覆盖默认模型（如 deepseek/deepseek-v4-flash）
+}
+
+impl CliArgs {
+    fn parse() -> Self {
+        let mut args = Self::default();
+        let mut argv = std::env::args().skip(1);
+        while let Some(arg) = argv.next() {
+            match arg.as_str() {
+                "--model-ref" | "-m" => {
+                    if let Some(val) = argv.next() {
+                        args.model_ref = Some(val);
+                    }
+                }
+                _ => {}
+            }
+        }
+        args
+    }
+}
+
+/// 从 OpenClaw 配置加载模型
+fn load_model_config(model_ref_override: Option<&str>) -> Option<AgentConfig> {
+    let openclaw_config = OpenClawConfig::load_default()?;
+
+    // 确定要使用的模型引用
+    let model_ref = model_ref_override
+        .map(|s| s.to_string())
+        .or_else(|| {
+            openclaw_config
+                .agents
+                .as_ref()?
+                .defaults
+                .as_ref()?
+                .model
+                .as_ref()?
+                .primary
+                .clone()
+        })?;
+
+    let resolved = openclaw_config.resolve_model(&model_ref)?;
+    info!(
+        "从 OpenClaw 配置加载模型: {} ({} @ {})",
+        model_ref, resolved.model_id, resolved.base_url
+    );
+
+    Some(AgentConfig::from_openclaw_config(&resolved, &model_ref, None))
+}
 
 /// 全局状态
 struct ServerState {
@@ -48,10 +103,16 @@ fn main() {
     let tool_registry = tools::ToolRegistry::new();
     let session_manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
 
-    // 创建 Agent（共享 session_manager）
-    let config = AgentConfig::default();
-    let agent = Agent::with_sessions(config, session_manager.clone());
+    let cli_args = CliArgs::parse();
 
+    // 尝试从 OpenClaw 配置加载模型，失败则使用默认配置
+    let config = load_model_config(cli_args.model_ref.as_deref())
+        .unwrap_or_else(|| {
+            warn!("无法从 OpenClaw 配置加载模型，使用默认配置");
+            AgentConfig::default()
+        });
+
+    let agent = Agent::with_sessions(config, session_manager.clone());
     let state = ServerState {
         agent,
         tool_registry,
