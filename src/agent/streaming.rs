@@ -57,6 +57,7 @@ impl StreamingEvent {
 
 /// 流式响应累加器
 /// 用于在流式接收过程中累积内容并检测工具调用
+#[derive(Default)]
 pub struct StreamingAccumulator {
     pub content: String,
     pub tool_calls: Vec<serde_json::Value>,
@@ -64,16 +65,6 @@ pub struct StreamingAccumulator {
     pub is_done: bool,
 }
 
-impl Default for StreamingAccumulator {
-    fn default() -> Self {
-        Self {
-            content: String::new(),
-            tool_calls: Vec::new(),
-            total_tokens: 0,
-            is_done: false,
-        }
-    }
-}
 
 impl StreamingAccumulator {
     /// 创建新累加器

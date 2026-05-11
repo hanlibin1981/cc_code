@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use futures_util::{TryStreamExt, AsyncBufReadExt};
+use tracing::debug;
 
 /// Agent 配置
 #[derive(Debug, Clone)]
@@ -72,21 +73,20 @@ impl AgentConfig {
 /// 系统提示词
 const SYSTEM_PROMPT: &str = r#"你是 cc_code，一个专业的 AI 编程助手，基于 DeepSeek V4 Pro 模型驱动。
 
-你的职责：
-1. 理解用户的编程任务需求
-2. 将复杂任务拆解为具体可执行的步骤
-3. 通过工具调用完成编码任务
-4. 及时汇报进度和结果
+职责与能力：
+- 理解用户编程需求，将其拆解为可执行步骤
+- 熟练使用工具完成文件读写、代码搜索、命令执行等任务
+- 及时汇报进度和结果
 
 工作流程：
-1. 理解任务 → 2. 规划步骤 → 3. 必要时调用工具 → 4. 检查结果 → 5. 完成或继续
+1. 理解任务 → 2. 规划步骤 → 3. 必要时调用工具 → 4. 分析结果 → 5. 继续或完成
 
 核心原则：
 - 每次只执行一个工具调用，等待结果后再决定下一步
-- 文件操作前先用 read_file 确认内容，再进行 edit_file 或 write_file
+- 文件操作前先用 read_file 确认内容，再进行 write/edit
 - Bash 命令要谨慎，危险操作（rm -rf、dd 等）必须拒绝
-- 工具执行后必须分析结果，再继续下一步
-- 复杂任务要分步骤完成，每步都要有明确的目标
+- 工具执行后必须分析结果再继续下一步
+- 复杂任务要分步骤完成，每步都要有明确目标
 
 重要环境信息：
 - 运行平台：macOS（Apple Silicon）
@@ -98,18 +98,18 @@ const SYSTEM_PROMPT: &str = r#"你是 cc_code，一个专业的 AI 编程助手�
 当需要调用工具时，在回复末尾添加一行：
 [TOOL_CALL:{"name":"tool_name","arguments":{"param1":"value1","param2":"value2"}}]
 
-可用工具及参数：
-- read_file(path): 读取文件，path 为文件路径
-- write_file(path, content): 写入文件，path 为路径，content 为内容
-- edit_file(path, old_text, new_text): 编辑文件，old_text 必须是文件中真实存在的文本
-- bash(command, timeout?): 执行命令，command 为命令字符串，可选 timeout 秒
+可用工具及参数说明：
+- read_file(path): 读取文件，path 为文件完整路径
+- write_file(path, content): 写入文件，path 为文件路径，content 为文件内容
+- edit_file(path, oldText, newText): 编辑文件，oldText 必须是文件中真实存在的文本
+- bash(command, timeout?): 执行命令，command 为命令字符串，超时时间默认 30 秒
 - glob(pattern, cwd?): 搜索文件，pattern 为 glob 模式（如 **/*.rs），cwd 为搜索目录
-- grep(pattern, paths?): 搜索内容，pattern 为搜索关键词，paths 为文件路径数组
+- grep(pattern, paths?, cwd?): 搜索内容，pattern 为正则表达式，paths 为文件列表
 
 重要限制：
-- 每个回复只能包含一个工具调用（不多不少）
+- 每个回复只能包含一个工具调用
 - 如果不需要工具，直接回复分析结果和任务进度
-- 工具结果以 {tool: "name", result: "..."} 格式在下一轮提供
+- 工具结果在下一轮以 {tool:"name", result:"..."} 格式提供
 - 遇到错误要分析原因并重试或调整策略
 "#;
 
@@ -166,6 +166,7 @@ impl Agent {
         session_id: uuid::Uuid,
         message: String,
     ) -> Result<AgentResponse, AgentError> {
+        debug!("process_message called for session {} (msg_len={})", session_id, message.len());
         // 检查是否需要压缩
         let should_compact = {
             let manager = self.sessions.read().await;
@@ -240,6 +241,7 @@ impl Agent {
         session_id: uuid::Uuid,
         message: String,
     ) -> Result<(String, Vec<ToolCallRequest>), AgentError> {
+        debug!("process_message_streaming called for session {} (msg_len={})", session_id, message.len());
         // 检查是否需要压缩
         let should_compact = {
             let manager = self.sessions.read().await;
@@ -277,9 +279,9 @@ impl Agent {
         // 构建 Anthropic 格式的消息列表
         let messages = self.build_messages(&session, tool_results);
 
+        debug!("Built {} messages for streaming call", messages.len());
         // 使用流式配置
         let streaming_config = StreamingConfig::default();
-
         // 调用模型（流式版本）
         let (accumulator, _state) = self
             .call_model_streaming(&messages, &streaming_config)
@@ -475,6 +477,7 @@ impl Agent {
         messages: &[ChatMessage],
         _config: &StreamingConfig,
     ) -> Result<(StreamingAccumulator, StreamingState), AgentError> {
+        debug!("call_model_streaming: {} messages", messages.len());
         // 检查上下文长度
         let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
         const MAX_CONTEXT: usize = 100_000;
@@ -523,7 +526,7 @@ impl Agent {
 
         let mut reader = response
             .bytes_stream()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            .map_err(|e| std::io::Error::other(e))
             .into_async_read();
 
 

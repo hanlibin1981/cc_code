@@ -4,12 +4,12 @@ use crate::tools::{ToolCall, ToolExecutionResult};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[allow(dead_code)]
 pub struct ToolExecutor {
     workspace: PathBuf,
     pub file_tool: crate::tools::FileTool,
     pub bash_tool: crate::tools::BashTool,
     pub edit_tool: crate::tools::EditTool,
+    pub search_tool: crate::tools::SearchTool,
 }
 
 impl ToolExecutor {
@@ -19,6 +19,7 @@ impl ToolExecutor {
             file_tool: crate::tools::FileTool::new(),
             bash_tool: crate::tools::BashTool::new(),
             edit_tool: crate::tools::EditTool::new(),
+            search_tool: crate::tools::SearchTool::new(),
         }
     }
 
@@ -60,6 +61,28 @@ impl ToolExecutor {
                 let path = self.get_string_arg(&tool_call.arguments, "path");
                 let p = path.unwrap_or_else(|| ".".to_string());
                 self.file_tool.list_directory(&p).await
+            }
+            "glob" => {
+                let pattern = self.get_string_arg(&tool_call.arguments, "pattern");
+                let cwd = self.get_string_arg(&tool_call.arguments, "cwd");
+                match pattern {
+                    Some(p) => self.search_tool.glob(&p, cwd.as_deref()).await,
+                    None => ToolExecutionResult::err("Missing 'pattern' argument"),
+                }
+            }
+            "grep" => {
+                let pattern = self.get_string_arg(&tool_call.arguments, "pattern");
+                let paths = tool_call.arguments.get("paths")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>());
+                let cwd = self.get_string_arg(&tool_call.arguments, "cwd");
+                let case_sensitive = tool_call.arguments.get("case_sensitive")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                match pattern {
+                    Some(p) => self.search_tool.grep(&p, paths.as_deref(), cwd.as_deref(), case_sensitive).await,
+                    None => ToolExecutionResult::err("Missing 'pattern' argument"),
+                }
             }
             _ => ToolExecutionResult::err(format!("Unknown tool: {}", tool_call.name)),
         }

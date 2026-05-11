@@ -212,7 +212,7 @@ pub fn compact_session(session: &mut Session) {
 
             let keep_last = cycles[cycles.len() - 1..].to_vec();
             let keep_indices: std::collections::HashSet<usize> = keep_last.iter()
-                .flat_map(|c| get_message_indices(c))
+                .flat_map(get_message_indices)
                 .collect();
 
             let old_messages: Vec<_> = msgs_clone.iter()
@@ -269,7 +269,7 @@ fn do_compact_once(session: &mut Session) {
 
     // 被压缩的历史（所有更早的消息）
     let keep_indices: std::collections::HashSet<usize> = keep_cycles.iter()
-        .flat_map(|c| get_message_indices(c))
+        .flat_map(get_message_indices)
         .collect();
 
     let old_messages: Vec<_> = msgs_clone.iter()

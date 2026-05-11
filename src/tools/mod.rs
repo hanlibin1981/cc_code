@@ -4,11 +4,13 @@ pub mod executor;
 pub mod file_tool;
 pub mod bash_tool;
 pub mod edit_tool;
+pub mod search_tool;
 
 pub use executor::ToolExecutor;
 pub use file_tool::FileTool;
 pub use bash_tool::BashTool;
 pub use edit_tool::EditTool;
+pub use search_tool::SearchTool;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -162,6 +164,56 @@ impl ToolRegistry {
                     props
                 },
                 required: vec!["session_id".to_string()],
+            },
+        });
+
+
+        // 文件搜索工具
+        self.register(ToolDef {
+            name: "glob".into(),
+            description: "按 glob 模式搜索文件（如 **/*.rs, *.txt）".into(),
+            input_schema: ToolInputSchema {
+                properties: {
+                    let mut props = HashMap::new();
+                    props.insert("pattern".to_string(), SchemaProperty {
+                        param_type: "string".into(),
+                        description: Some("glob 模式（如 **/*.rs）".into()),
+                    });
+                    props.insert("cwd".to_string(), SchemaProperty {
+                        param_type: "string".into(),
+                        description: Some("搜索根目录（可选，默认为当前目录）".into()),
+                    });
+                    props
+                },
+                required: vec!["pattern".to_string()],
+            },
+        });
+
+        self.register(ToolDef {
+            name: "grep".into(),
+            description: "在文件中搜索内容（支持正则表达式）".into(),
+            input_schema: ToolInputSchema {
+                properties: {
+                    let mut props = HashMap::new();
+                    props.insert("pattern".to_string(), SchemaProperty {
+                        param_type: "string".into(),
+                        description: Some("搜索模式（正则表达式）".into()),
+                    });
+                    props.insert("paths".to_string(), SchemaProperty {
+                        param_type: "array".into(),
+                        description: Some("搜索的文件路径数组（可选，空表示搜索所有文件）".into()),
+                    });
+                    props.insert("cwd".to_string(), SchemaProperty {
+                        param_type: "string".into(),
+                        description: Some("搜索根目录（可选）".into()),
+                    });
+                    props.insert("case_sensitive".to_string(), SchemaProperty {
+                        param_type: "boolean".into(),
+                        description: Some("是否大小写敏感（默认 false）".into()),
+                    });
+                    props
+                },
+                required: vec!["pattern".to_string()],
             },
         });
     }

@@ -9,7 +9,7 @@ use crate::tools::ToolExecutionResult;
 use std::path::{Path, PathBuf};
 use std::collections::HashSet;
 use tokio::fs;
-use walkdir::WalkDir;
+use walkdir::{WalkDir, WalkDirIterator};
 
 /// 最大搜索结果数
 const MAX_RESULTS: usize = 500;
@@ -64,12 +64,12 @@ impl SearchTool {
         }
 
         let mut results = Vec::new();
-        let mut walker = WalkDir::new(&base)
+        let walker = WalkDir::new(&base)
             .follow_links(false)
             .into_iter()
             .filter_entry(|e| !self.is_ignored_entry(e));
 
-        while let Some(entry) = walker.next() {
+        for entry in walker {
             if results.len() >= MAX_RESULTS {
                 break;
             }
@@ -140,7 +140,6 @@ impl SearchTool {
         let paths_to_search: Vec<PathBuf> = if let Some(p) = paths {
             p.iter().map(|s| base.join(s)).collect()
         } else {
-            // 搜索整个目录
             vec![base.clone()]
         };
 
@@ -157,12 +156,12 @@ impl SearchTool {
                 let file_matches = self.search_file(&path, &regex, case_sensitive).await;
                 matches.extend(file_matches);
             } else if path.is_dir() {
-                let mut walker = WalkDir::new(&path)
+                let walker = WalkDir::new(&path)
                     .follow_links(false)
                     .into_iter()
                     .filter_entry(|e| !self.is_ignored_entry(e));
 
-                while let Some(entry) = walker.next() {
+                for entry in walker {
                     if matches.len() >= MAX_RESULTS {
                         break;
                     }
@@ -181,7 +180,6 @@ impl SearchTool {
                     let file_matches = self.search_file(&file_path, &regex, case_sensitive).await;
                     
                     for m in file_matches {
-                        // Prepend relative path
                         let relative = file_path.strip_prefix(&base).unwrap_or(&file_path);
                         matches.push(format!("{}:{}", relative.display(), m));
                     }
@@ -208,7 +206,6 @@ impl SearchTool {
     async fn search_file(&self, path: &Path, regex: &regex::Regex, case_insensitive: bool) -> Vec<String> {
         let mut results = Vec::new();
 
-        // 跳过太大或二进制文件
         if let Ok(metadata) = fs::metadata(path).await {
             if metadata.len() > MAX_SCAN_SIZE as u64 {
                 return results;
@@ -220,7 +217,6 @@ impl SearchTool {
             Err(_) => return results,
         };
 
-        // 简单二进制检测
         if content.contains('\0') {
             return results;
         }
@@ -233,7 +229,6 @@ impl SearchTool {
 
         for (line_num, line) in search_text.lines().enumerate() {
             if regex.is_match(line) {
-                // 找到匹配行，用原始内容输出
                 let original_line = content.lines().nth(line_num).unwrap_or("");
                 if original_line.len() > 200 {
                     results.push(format!("{:>4}: {}", line_num + 1, truncate(original_line, 200)));
@@ -269,27 +264,32 @@ impl SearchTool {
         false
     }
 
-    /// 简单的 glob 匹配
-    fn match_glob(&self, path: &str, pattern: &str) -> bool {
-        // 处理 ** 递归匹配
-        if pattern.contains("**") {
-            let parts: Vec<&str> = pattern.split("**").collect();
-            let mut last_pos = 0;
-            for part in parts {
-                let part = part.trim_start_matches('/');
-                if part.is_empty() {
-                    continue;
+    /// glob pattern segment -> regex (single path component, no slashes)
+    fn glob_seg_to_regex(pattern: &str) -> String {
+        let mut result = String::from("^");
+        for c in pattern.chars() {
+            match c {
+                '*' => result.push_str("[^\"/]*"),
+                '?' => result.push_str("[^\"/]"),
+                '\\' | '.' | '+' | '^' | '$' | '(' | ')' | '|' | '[' | ']' | '{' | '}' => {
+                    result.push('\\');
+                    result.push(c);
                 }
-                if let Some(pos) = path[last_pos..].find(part) {
-                    last_pos = last_pos + pos + part.len();
-                } else {
-                    return false;
-                }
+                c => result.push(c),
             }
-            return true;
+        }
+        result
+    }
+
+    fn match_glob(&self, path: &str, pattern: &str) -> bool {
+        // 处理 ** 递归匹配：转换为正则
+        if pattern.contains("**") {
+            let regex_pattern = Self::glob_pattern_to_regex(pattern);
+            let re = regex::Regex::new(&regex_pattern);
+            return re.map(|r| r.is_match(path)).unwrap_or(false);
         }
 
-        // 简单的文件名匹配
+        // 对齐尾部匹配
         let pattern_parts: Vec<&str> = pattern.split(['/', '\\']).collect();
         let path_parts: Vec<&str> = path.split(['/', '\\']).collect();
 
@@ -298,10 +298,10 @@ impl SearchTool {
         }
 
         let start_offset = path_parts.len() - pattern_parts.len();
-        
+
         for (i, pattern_part) in pattern_parts.iter().enumerate() {
             let path_part = path_parts[start_offset + i];
-            if !self.match_part(path_part, pattern_part) {
+            if !Self::match_part_glob(path_part, pattern_part) {
                 return false;
             }
         }
@@ -309,36 +309,51 @@ impl SearchTool {
         true
     }
 
-    /// 匹配单个路径部分
-    fn match_part(&self, name: &str, pattern: &str) -> bool {
-        let mut pattern_chars = pattern.chars().peekable();
-        let mut name_chars = name.chars().peekable();
+    fn match_part_glob(name: &str, pattern: &str) -> bool {
+        let regex_pattern = Self::glob_seg_to_regex(pattern);
+        regex::Regex::new(&regex_pattern)
+            .map(|r| r.is_match(name))
+            .unwrap_or(false)
+    }
 
-        while pattern_chars.peek().is_some() || name_chars.peek().is_some() {
-            match pattern_chars.next() {
-                None => return name_chars.peek().is_none(),
-                Some('*') => {
-                    // * 匹配任意字符（不含 /）
-                    while name_chars.peek().is_some() && name_chars.peek() != Some(&'/') {
-                        name_chars.next();
-                    }
+    /// 将包含 ** 的 glob pattern 转换为正则表达式
+    fn glob_pattern_to_regex(pattern: &str) -> String {
+        let mut result = String::from("^");
+        let chars: Vec<char> = pattern.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '*' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                // ** 匹配任意路径段（可包含斜杠）
+                if i + 2 < chars.len() && chars[i + 2] == '/' {
+                    // **/ -> 匹配 0 或多个子目录
+                    result.push_str("(?:.*/)?");
+                    i += 3;
+                } else {
+                    // ** 在末尾 -> 匹配任意内容
+                    result.push_str("(?:.*/)?");
+                    i += 2;
                 }
-                Some('?') => {
-                    // ? 匹配单个字符
-                    if name_chars.peek().is_none() || name_chars.peek() == Some(&'/') {
-                        return false;
-                    }
-                    name_chars.next();
-                }
-                Some(c) => {
-                    if name_chars.next() != Some(c) {
-                        return false;
-                    }
-                }
+            } else if chars[i] == '*' {
+                result.push_str("[^\"/]*");
+                i += 1;
+            } else if chars[i] == '?' {
+                result.push_str("[^\"/]");
+                i += 1;
+            } else if chars[i] == '\\' || chars[i] == '.' || chars[i] == '+'
+                || chars[i] == '^' || chars[i] == '$' || chars[i] == '('
+                || chars[i] == ')' || chars[i] == '|' || chars[i] == '['
+                || chars[i] == ']' || chars[i] == '{' || chars[i] == '}' || chars[i] == '*'
+            {
+                result.push('\\');
+                result.push(chars[i]);
+                i += 1;
+            } else {
+                result.push(chars[i]);
+                i += 1;
             }
         }
-
-        true
+        result.push('$');
+        result
     }
 
     /// find 命令实现
@@ -361,7 +376,6 @@ impl SearchTool {
         };
 
         let name_regex = name_pattern.map(|p| {
-            // 把 shell 通配符转成正则
             let mut regex_pattern = String::from("^");
             for c in p.chars() {
                 match c {
@@ -376,18 +390,18 @@ impl SearchTool {
             regex::Regex::new(&regex_pattern).ok()
         }).flatten();
 
-        let mut walker = WalkDir::new(&base)
+        let walker = WalkDir::new(&base)
             .follow_links(false)
             .max_depth(if name_pattern.is_some() { usize::MAX } else { 3 })
             .into_iter()
             .filter_entry(|e| !self.is_ignored_entry(e));
 
-        while let Some(entry) = walker.next() {
+        for entry in walker {
             if results.len() >= MAX_RESULTS {
                 break;
             }
 
-            let entry = match entry {
+            let entry: walkdir::DirEntry = match entry {
                 Ok(e) => e,
                 Err(_) => continue,
             };

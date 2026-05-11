@@ -123,7 +123,7 @@ pub async fn process_message(server: &McpServer, message: &str) -> Option<String
         Ok(r) => r,
         Err(e) => {
             let response = error_response(serde_json::Value::Null, e);
-            return Some(serde_json::to_string(&response).ok()?);
+            return serde_json::to_string(&response).ok();
         }
     };
 

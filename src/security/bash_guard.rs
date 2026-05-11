@@ -374,9 +374,10 @@ impl BashGuard {
 
     /// V6: 危险变量展开
     fn v6_dangerous_variables(&self, cmd: &str) -> bool {
-        // 变量紧邻重定向符号
-        cmd.contains("$(") && (cmd.contains(">|") || cmd.contains(">|"))
-            || cmd.contains("${") && (cmd.contains("}|") || cmd.contains("}>"))
+        // 比较变量紧邻重定向符号
+        let has_var = cmd.contains("$(") || cmd.contains("${");
+        let has_glob = cmd.contains("}>") || cmd.contains("}>>");
+        has_var && has_glob
     }
 
     /// V8: 命令替换

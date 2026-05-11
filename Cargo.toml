@@ -19,6 +19,9 @@ rust-mcp-sdk = "0.9"
 # Regex for tool call parsing
 regex = "1"
 
+# File walking for glob
+walkdir = "1"
+
 # HTTP client for model API
 reqwest = { version = "0.12", features = ["json"] }
 
